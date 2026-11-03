@@ -17,9 +17,9 @@ export async function GET(request: Request) {
     return NextResponse.redirect(destination);
   }
   try {
-    await completeCalendlyAuthorization({ providerId: access.providerId, state, code });
+    const result = await completeCalendlyAuthorization({ providerId: access.providerId, state, code });
     await recordActivity({ userId: access.session.user.id, action: "calendly_connected", targetType: "provider", targetId: access.providerId });
-    destination.searchParams.set("calendly", "connected");
+    destination.searchParams.set("calendly", result.syncSucceeded ? "connected" : "connected_sync_failed");
   } catch (error) {
     console.error("Calendly OAuth callback failed", { providerId: access.providerId, error });
     destination.searchParams.set("calendly", "failed");

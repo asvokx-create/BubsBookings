@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { CALENDLY_OAUTH_SCOPES, calendlyApiUrl, calendlyScheduledEventStatus, calendlyWebhookOwnerUris } from "../lib/calendly-api.ts";
 import { verifyCalendlyWebhookSignature } from "../lib/calendly-webhook.ts";
 
 const integration = readFileSync("lib/calendly.ts", "utf8");
@@ -26,6 +27,14 @@ test("Calendly OAuth uses PKCE and confidential-client authentication", () => {
   assert.match(integration, /Authorization: basicAuthorization\(\)/);
   assert.match(integration, /client_id: calendlyConfiguration\(\)\.clientId/);
   assert.match(integration, /reason === "invalid_client"/);
+  assert.deepEqual(CALENDLY_OAUTH_SCOPES, ["users:read", "scheduled_events:read", "webhooks:write"]);
+  assert.match(integration, /searchParams\.set\("scope", CALENDLY_OAUTH_SCOPES\.join\(" "\)\)/);
+});
+
+test("Calendly API pagination cannot redirect credentialed requests to another origin", () => {
+  assert.equal(calendlyApiUrl("/scheduled_events").origin, "https://api.calendly.com");
+  assert.equal(calendlyApiUrl("https://api.calendly.com/scheduled_events?page_token=next").hostname, "api.calendly.com");
+  assert.throws(() => calendlyApiUrl("https://attacker.example/collect"), /invalid API URL/);
 });
 
 test("Calendly webhook verifier rejects tampering, missing signatures, and replays", () => {
@@ -51,13 +60,33 @@ test("appointments are imported idempotently and webhook deliveries are deduplic
   assert.match(migration, /UNIQUE \(connection_id, external_event_uri\)/);
   assert.match(migration, /payload_hash text PRIMARY KEY/);
   assert.match(integration, /ON CONFLICT\(connection_id,external_event_uri\) DO UPDATE/);
-  assert.match(integration, /ON CONFLICT\(payload_hash\) DO NOTHING/);
+  assert.match(integration, /WHERE calendly_webhook_deliveries\.status='failed'/);
   assert.match(integration, /source_updated_at/);
+  assert.match(integration, /excluded\.source_updated_at IS NOT NULL AND excluded\.source_updated_at>=provider_calendly_events\.source_updated_at/);
+});
+
+test("manual synchronization explicitly imports active and canceled appointments", () => {
+  assert.match(integration, /for \(const status of \["active", "canceled"\]/);
+  assert.match(integration, /first\.searchParams\.set\("status", status\)/);
+  assert.match(integration, /if \(nextUrl\) throw new Error\("Calendly synchronization exceeded/);
+});
+
+test("co-hosted and group events resolve safely", () => {
+  const owners = calendlyWebhookOwnerUris({ event_memberships: [
+    { user: "https://api.calendly.com/users/owner-a" },
+    { user: "https://api.calendly.com/users/owner-b" },
+    { user: "https://attacker.example/users/not-calendly" },
+    { user: "https://api.calendly.com/users/owner-a" },
+  ] });
+  assert.deepEqual(owners, ["https://api.calendly.com/users/owner-a", "https://api.calendly.com/users/owner-b"]);
+  assert.equal(calendlyScheduledEventStatus("invitee.canceled", "active"), "active");
+  assert.equal(calendlyScheduledEventStatus("invitee.canceled", "canceled"), "canceled");
+  assert.equal(calendlyScheduledEventStatus("invitee.canceled", undefined), "canceled");
 });
 
 test("Calendly supports manual sync and clearly reports webhook plan limitations", () => {
   assert.match(panel, /Sync now/);
-  assert.match(panel, /Calendly plan does not support webhooks/);
+  assert.match(panel, /Calendly Standard, Teams, or Enterprise/);
   assert.match(integration, /status === 403 \? "unsupported"/);
   assert.match(integration, /invitee\.created/);
   assert.match(integration, /invitee\.canceled/);

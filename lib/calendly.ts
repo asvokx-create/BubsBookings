@@ -3,9 +3,9 @@ import "server-only";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { PoolClient } from "pg";
 import { database } from "@/lib/database";
+import { CALENDLY_API_ORIGIN, CALENDLY_OAUTH_SCOPES, calendlyApiUrl, calendlyScheduledEventStatus, calendlyWebhookOwnerUris } from "@/lib/calendly-api";
 import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
 
-const API_ORIGIN = "https://api.calendly.com";
 const AUTH_ORIGIN = "https://auth.calendly.com";
 
 type TokenResponse = {
@@ -25,6 +25,8 @@ type ConnectionRow = {
   token_expires_at: Date;
   calendly_user_uri: string;
   calendly_organization_uri: string;
+  account_timezone: string;
+  granted_scope: string;
   webhook_subscription_uri: string | null;
 };
 
@@ -106,14 +108,22 @@ async function tokenRequest(parameters: Record<string, string>) {
 }
 
 async function apiRequest<T>(token: string, pathOrUrl: string, init?: RequestInit) {
-  const url = pathOrUrl.startsWith("https://") ? pathOrUrl : `${API_ORIGIN}${pathOrUrl}`;
+  const url = calendlyApiUrl(pathOrUrl);
   const response = await fetch(url, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...init?.headers },
     cache: "no-store",
   });
   if (!response.ok) {
-    const error = new Error(`Calendly API request failed (${response.status}).`) as Error & { status?: number };
+    let reason = "";
+    try {
+      const payload = await response.json() as { message?: unknown; title?: unknown };
+      const value = typeof payload.message === "string" ? payload.message : typeof payload.title === "string" ? payload.title : "";
+      reason = value.replace(/\s+/g, " ").trim().slice(0, 240);
+    } catch {
+      // Calendly may return an empty or non-JSON error response.
+    }
+    const error = new Error(`Calendly API request failed (${response.status})${reason ? `: ${reason}` : "."}`) as Error & { status?: number };
     error.status = response.status;
     throw error;
   }
@@ -140,6 +150,7 @@ export async function createCalendlyAuthorization(providerId: string) {
   url.searchParams.set("code_challenge_method", "S256");
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("state", state);
+  url.searchParams.set("scope", CALENDLY_OAUTH_SCOPES.join(" "));
   return url.toString();
 }
 
@@ -161,6 +172,11 @@ export async function completeCalendlyAuthorization(input: { providerId: string;
   });
   const current = await apiRequest<{ resource: { uri: string; name: string; email: string; timezone: string; scheduling_url?: string; current_organization: string } }>(token.access_token, "/users/me");
   const expiresAt = new Date(Date.now() + token.expires_in * 1000);
+  const existing = await database.query<{ id: string }>(
+    "SELECT id::text FROM provider_calendly_connections WHERE provider_id::text=$1 AND disconnected_at IS NULL",
+    [input.providerId],
+  );
+  if (existing.rows[0]) await removeCalendlyWebhook(existing.rows[0].id);
   const result = await database.query<{ id: string }>(
     `INSERT INTO provider_calendly_connections(provider_id,calendly_user_uri,calendly_organization_uri,account_name,account_email,
        account_timezone,scheduling_url,access_token_encrypted,refresh_token_encrypted,token_expires_at,granted_scope,disconnected_at,updated_at)
@@ -169,15 +185,22 @@ export async function completeCalendlyAuthorization(input: { providerId: string;
        calendly_organization_uri=excluded.calendly_organization_uri,account_name=excluded.account_name,
        account_email=excluded.account_email,account_timezone=excluded.account_timezone,scheduling_url=excluded.scheduling_url,
        access_token_encrypted=excluded.access_token_encrypted,refresh_token_encrypted=excluded.refresh_token_encrypted,
-       token_expires_at=excluded.token_expires_at,granted_scope=excluded.granted_scope,disconnected_at=NULL,
-       last_sync_error=NULL,updated_at=now()
+        token_expires_at=excluded.token_expires_at,granted_scope=excluded.granted_scope,disconnected_at=NULL,
+        webhook_subscription_uri=NULL,webhook_status='not_configured',webhook_error=NULL,
+        last_sync_error=NULL,connected_at=now(),updated_at=now()
      RETURNING id::text`,
     [input.providerId, current.resource.uri, current.resource.current_organization || token.organization, current.resource.name,
       current.resource.email, current.resource.timezone || "UTC", current.resource.scheduling_url ?? null,
       encryptCalendlySecret(token.access_token), encryptCalendlySecret(token.refresh_token), expiresAt, token.scope ?? ""],
   );
-  await syncCalendlyConnection(result.rows[0].id);
+  let syncSucceeded = true;
+  try {
+    await syncCalendlyConnection(result.rows[0].id);
+  } catch {
+    syncSucceeded = false;
+  }
   await configureCalendlyWebhook(result.rows[0].id);
+  return { syncSucceeded };
 }
 
 async function connectionToken(connectionId: string) {
@@ -186,7 +209,7 @@ async function connectionToken(connectionId: string) {
     await client.query("BEGIN");
     const result = await client.query<ConnectionRow>(
       `SELECT id::text,provider_id::text,access_token_encrypted,refresh_token_encrypted,token_expires_at,
-              calendly_user_uri,calendly_organization_uri,webhook_subscription_uri
+               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri
        FROM provider_calendly_connections WHERE id::text=$1 AND disconnected_at IS NULL FOR UPDATE`, [connectionId],
     );
     const connection = result.rows[0];
@@ -200,7 +223,7 @@ async function connectionToken(connectionId: string) {
     await client.query(
       `UPDATE provider_calendly_connections SET access_token_encrypted=$2,refresh_token_encrypted=$3,
        token_expires_at=$4,granted_scope=$5,updated_at=now(),last_sync_error=NULL WHERE id::text=$1`,
-      [connectionId, encryptCalendlySecret(refreshed.access_token), encryptCalendlySecret(refreshed.refresh_token), expiresAt, refreshed.scope ?? ""],
+      [connectionId, encryptCalendlySecret(refreshed.access_token), encryptCalendlySecret(refreshed.refresh_token), expiresAt, refreshed.scope ?? connection.granted_scope],
     );
     await client.query("COMMIT");
     return { connection: { ...connection, token_expires_at: expiresAt }, token: refreshed.access_token };
@@ -226,8 +249,8 @@ async function upsertEvent(client: Pick<PoolClient, "query">, input: { connectio
        title=excluded.title,starts_at=excluded.starts_at,ends_at=excluded.ends_at,status=excluded.status,
        location=excluded.location,event_timezone=excluded.event_timezone,rescheduled=excluded.rescheduled,
        source_updated_at=COALESCE(excluded.source_updated_at,provider_calendly_events.source_updated_at),last_seen_at=now(),updated_at=now()
-     WHERE provider_calendly_events.source_updated_at IS NULL OR excluded.source_updated_at IS NULL
-       OR excluded.source_updated_at>=provider_calendly_events.source_updated_at`,
+     WHERE provider_calendly_events.source_updated_at IS NULL
+       OR (excluded.source_updated_at IS NOT NULL AND excluded.source_updated_at>=provider_calendly_events.source_updated_at)`,
     [input.connectionId, input.providerId, input.event.uri, input.inviteeUri ?? null, input.event.name.slice(0, 240), input.event.start_time,
       input.event.end_time, input.event.status, eventLocation(input.event).slice(0, 300), input.timezone ?? "UTC",
       input.rescheduled ?? false, input.event.updated_at ?? null],
@@ -238,20 +261,25 @@ export async function syncCalendlyConnection(connectionId: string) {
   await database.query("UPDATE provider_calendly_connections SET last_sync_started_at=now(),last_sync_error=NULL WHERE id::text=$1", [connectionId]);
   try {
     const { connection, token } = await connectionToken(connectionId);
-    let nextUrl: string | null = new URL("/scheduled_events", API_ORIGIN).toString();
-    const first = new URL(nextUrl);
-    first.searchParams.set("user", connection.calendly_user_uri);
-    first.searchParams.set("min_start_time", new Date(Date.now() - 30 * 86_400_000).toISOString());
-    first.searchParams.set("max_start_time", new Date(Date.now() + 548 * 86_400_000).toISOString());
-    first.searchParams.set("sort", "start_time:asc");
-    first.searchParams.set("count", "100");
-    nextUrl = first.toString();
-    let pages = 0;
-    while (nextUrl && pages < 20) {
-      const page: { collection: CalendlyEvent[]; pagination?: { next_page?: string | null } } = await apiRequest(token, nextUrl);
-      for (const event of page.collection) await upsertEvent(database, { connectionId, providerId: connection.provider_id, event });
-      nextUrl = page.pagination?.next_page ?? null;
-      pages += 1;
+    for (const status of ["active", "canceled"] as const) {
+      const first = new URL("/scheduled_events", CALENDLY_API_ORIGIN);
+      first.searchParams.set("user", connection.calendly_user_uri);
+      first.searchParams.set("status", status);
+      first.searchParams.set("min_start_time", new Date(Date.now() - 30 * 86_400_000).toISOString());
+      first.searchParams.set("max_start_time", new Date(Date.now() + 548 * 86_400_000).toISOString());
+      first.searchParams.set("sort", "start_time:asc");
+      first.searchParams.set("count", "100");
+      let nextUrl: string | null = first.toString();
+      let pages = 0;
+      while (nextUrl && pages < 100) {
+        const page: { collection: CalendlyEvent[]; pagination?: { next_page?: string | null } } = await apiRequest(token, nextUrl);
+        for (const event of page.collection) {
+          await upsertEvent(database, { connectionId, providerId: connection.provider_id, event, timezone: connection.account_timezone });
+        }
+        nextUrl = page.pagination?.next_page ?? null;
+        pages += 1;
+      }
+      if (nextUrl) throw new Error("Calendly synchronization exceeded the supported pagination limit.");
     }
     await database.query("UPDATE provider_calendly_connections SET last_sync_succeeded_at=now(),last_sync_error=NULL,updated_at=now() WHERE id::text=$1", [connectionId]);
     return { ok: true };
@@ -265,19 +293,25 @@ export async function syncCalendlyConnection(connectionId: string) {
 export async function configureCalendlyWebhook(connectionId: string) {
   const config = calendlyConfiguration();
   if (!config.webhookSigningKey) {
-    await database.query("UPDATE provider_calendly_connections SET webhook_status='not_configured' WHERE id::text=$1", [connectionId]);
+    await database.query("UPDATE provider_calendly_connections SET webhook_status='not_configured',webhook_error='Automatic updates are not configured. Manual sync remains available.' WHERE id::text=$1", [connectionId]);
     return;
   }
   try {
     const { connection, token } = await connectionToken(connectionId);
+    if (connection.webhook_subscription_uri) {
+      await apiRequest(token, connection.webhook_subscription_uri, { method: "DELETE" }).catch(() => undefined);
+    }
     const response = await apiRequest<{ resource: { uri: string } }>(token, "/webhook_subscriptions", {
       method: "POST",
       body: JSON.stringify({ url: config.webhookUrl, events: ["invitee.created", "invitee.canceled"], organization: connection.calendly_organization_uri, user: connection.calendly_user_uri, scope: "user" }),
     });
-    await database.query("UPDATE provider_calendly_connections SET webhook_subscription_uri=$2,webhook_status='active',updated_at=now() WHERE id::text=$1", [connectionId, response.resource.uri]);
+    await database.query("UPDATE provider_calendly_connections SET webhook_subscription_uri=$2,webhook_status='active',webhook_error=NULL,updated_at=now() WHERE id::text=$1", [connectionId, response.resource.uri]);
   } catch (error) {
     const status = (error as Error & { status?: number }).status;
-    await database.query("UPDATE provider_calendly_connections SET webhook_status=$2,last_sync_error=$3,updated_at=now() WHERE id::text=$1", [connectionId, status === 403 ? "unsupported" : "failed", status === 403 ? "Automatic Calendly updates require a paid Calendly plan. Manual sync remains available." : "Calendly automatic updates could not be enabled."]);
+    const message = status === 403
+      ? "Automatic updates require a Calendly Standard, Teams, or Enterprise plan plus approved webhook permissions. Manual sync remains available."
+      : "Calendly automatic updates could not be enabled. Manual sync remains available.";
+    await database.query("UPDATE provider_calendly_connections SET webhook_subscription_uri=NULL,webhook_status=$2,webhook_error=$3,updated_at=now() WHERE id::text=$1", [connectionId, status === 403 ? "unsupported" : "failed", message]);
   }
 }
 
@@ -290,7 +324,9 @@ export async function processCalendlyWebhook(rawBody: string) {
   const payload = JSON.parse(rawBody) as { event?: string; created_at?: string; payload?: Record<string, unknown> };
   const claimed = await database.query(
     `INSERT INTO calendly_webhook_deliveries(payload_hash,event_type) VALUES($1,$2)
-     ON CONFLICT(payload_hash) DO NOTHING RETURNING payload_hash`, [hash, payload.event ?? "unknown"],
+     ON CONFLICT(payload_hash) DO UPDATE SET status='processing',error_message=NULL,processed_at=NULL,received_at=now()
+       WHERE calendly_webhook_deliveries.status='failed'
+     RETURNING payload_hash`, [hash, payload.event ?? "unknown"],
   );
   if (!claimed.rowCount) return { duplicate: true };
   try {
@@ -302,33 +338,32 @@ export async function processCalendlyWebhook(rawBody: string) {
     const eventUri = typeof data.event === "string" ? data.event : "";
     const inviteeUri = typeof data.uri === "string" ? data.uri : null;
     const scheduledEvent = data.scheduled_event && typeof data.scheduled_event === "object" ? data.scheduled_event as Record<string, unknown> : {};
-    const memberships = Array.isArray(scheduledEvent.event_memberships) ? scheduledEvent.event_memberships : [];
-    const membershipUser = (memberships[0] as Record<string, unknown> | undefined)?.user;
-    const resolvedUser = typeof membershipUser === "string" ? membershipUser : null;
-    if (!eventUri || !resolvedUser) throw new Error("Calendly webhook did not identify an event owner.");
+    const membershipUsers = calendlyWebhookOwnerUris(scheduledEvent);
+    if (!eventUri || !membershipUsers.length) throw new Error("Calendly webhook did not identify an event owner.");
     const connectionResult = await database.query<ConnectionRow>(
       `SELECT id::text,provider_id::text,access_token_encrypted,refresh_token_encrypted,token_expires_at,
-              calendly_user_uri,calendly_organization_uri,webhook_subscription_uri
-       FROM provider_calendly_connections WHERE calendly_user_uri=$1 AND disconnected_at IS NULL`, [resolvedUser],
+               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri
+       FROM provider_calendly_connections WHERE calendly_user_uri=ANY($1::text[]) AND disconnected_at IS NULL`, [membershipUsers],
     );
-    const connection = connectionResult.rows[0];
-    if (!connection) {
+    if (!connectionResult.rows.length) {
       await database.query("UPDATE calendly_webhook_deliveries SET status='ignored',processed_at=now() WHERE payload_hash=$1", [hash]);
       return { ignored: true };
     }
-    const canceled = payload.event === "invitee.canceled";
+    const eventStatus = calendlyScheduledEventStatus(payload.event, scheduledEvent.status);
     const event = {
       uri: eventUri,
       name: typeof scheduledEvent.name === "string" ? scheduledEvent.name : "Calendly appointment",
-      status: canceled ? "canceled" as const : "active" as const,
+      status: eventStatus,
       start_time: String(scheduledEvent.start_time ?? ""),
       end_time: String(scheduledEvent.end_time ?? ""),
       updated_at: typeof scheduledEvent.updated_at === "string" ? scheduledEvent.updated_at : payload.created_at,
       location: scheduledEvent.location && typeof scheduledEvent.location === "object" ? scheduledEvent.location as CalendlyEvent["location"] : null,
     };
     if (!event.start_time || !event.end_time) throw new Error("Calendly webhook did not include appointment times.");
-    await upsertEvent(database, { connectionId: connection.id, providerId: connection.provider_id, event, inviteeUri, rescheduled: data.rescheduled === true, timezone: typeof data.timezone === "string" ? data.timezone : "UTC" });
-    await database.query("UPDATE calendly_webhook_deliveries SET provider_id=$2::uuid,status='processed',processed_at=now() WHERE payload_hash=$1", [hash, connection.provider_id]);
+    for (const connection of connectionResult.rows) {
+      await upsertEvent(database, { connectionId: connection.id, providerId: connection.provider_id, event, inviteeUri, rescheduled: data.rescheduled === true, timezone: typeof data.timezone === "string" ? data.timezone : connection.account_timezone });
+    }
+    await database.query("UPDATE calendly_webhook_deliveries SET provider_id=$2::uuid,status='processed',processed_at=now() WHERE payload_hash=$1", [hash, connectionResult.rows.length === 1 ? connectionResult.rows[0].provider_id : null]);
     return { processed: true };
   } catch (error) {
     await database.query("UPDATE calendly_webhook_deliveries SET status='failed',error_message=$2,processed_at=now() WHERE payload_hash=$1", [hash, error instanceof Error ? error.message.slice(0, 500) : "Webhook processing failed."]);
@@ -336,13 +371,26 @@ export async function processCalendlyWebhook(rawBody: string) {
   }
 }
 
+async function removeCalendlyWebhook(connectionId: string) {
+  try {
+    const { connection, token } = await connectionToken(connectionId);
+    if (connection.webhook_subscription_uri) await apiRequest(token, connection.webhook_subscription_uri, { method: "DELETE" });
+  } catch {
+    // Reconnection and local disconnection must remain possible after remote access is revoked.
+  }
+}
+
 export async function disconnectCalendly(connectionId: string) {
-  const { connection, token } = await connectionToken(connectionId);
-  if (connection.webhook_subscription_uri) await apiRequest(token, connection.webhook_subscription_uri, { method: "DELETE" }).catch(() => undefined);
-  const config = calendlyConfiguration();
-  await fetch(`${AUTH_ORIGIN}/oauth/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, token }) }).catch(() => undefined);
+  try {
+    const { token } = await connectionToken(connectionId);
+    await removeCalendlyWebhook(connectionId);
+    const config = calendlyConfiguration();
+    await fetch(`${AUTH_ORIGIN}/oauth/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, token }) });
+  } catch {
+    // Always complete the local disconnect even if Calendly credentials were already revoked.
+  }
   await database.query(
     `UPDATE provider_calendly_connections SET disconnected_at=now(),access_token_encrypted='',refresh_token_encrypted='',
-       webhook_subscription_uri=NULL,webhook_status='not_configured',updated_at=now() WHERE id::text=$1`, [connectionId],
+       webhook_subscription_uri=NULL,webhook_status='not_configured',webhook_error=NULL,updated_at=now() WHERE id::text=$1`, [connectionId],
   );
 }
