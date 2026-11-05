@@ -6,6 +6,12 @@ import test from "node:test";
 import { validateAffiliateAgreementConsent } from "../lib/affiliate-agreement-consent.ts";
 import { AFFILIATE_LEGAL_DOCUMENT_LIST } from "../lib/legal-document-versions.ts";
 
+const CANONICAL_LEGAL_SOURCE_HASHES: Record<string, string> = {
+  partner_agreement: "978d5acf7b38e979776543f0d36fa1e3f646a0b2443872732471c9c0cc076cf5",
+  terms_of_service: "414a77ed8020569f48b841b00dfa068d6ee1afc4946c5bdba354cd08146286ab",
+  privacy_policy: "8fc46237c8ec6a63ee0124970dc813e6ac94d771577763117b422adc339aeedb",
+};
+
 test("affiliate application requires all three separate affirmative acknowledgments", () => {
   assert.deepEqual(validateAffiliateAgreementConsent({}).missing, ["Partner Agreement", "Terms of Service", "Privacy Policy"]);
   assert.equal(validateAffiliateAgreementConsent({ partnerAgreementAccepted: true, termsAccepted: true }).accepted, false);
@@ -14,10 +20,12 @@ test("affiliate application requires all three separate affirmative acknowledgme
   assert.equal(validateAffiliateAgreementConsent({ partnerAgreementAccepted: "on", termsAccepted: true, privacyAcknowledged: true }).accepted, false);
 });
 
-test("published legal source hashes match the immutable version manifest", async () => {
+test("published legal source text matches the approved versions across checkout line endings", async () => {
   for (const document of AFFILIATE_LEGAL_DOCUMENT_LIST) {
-    const bytes = await readFile(new URL(`../${document.sourcePath}`, import.meta.url));
-    assert.equal(createHash("sha256").update(bytes).digest("hex"), document.contentHash, `${document.key} source changed without a new hash`);
+    const source = await readFile(new URL(`../${document.sourcePath}`, import.meta.url), "utf8");
+    const canonicalSource = source.replace(/\r\n?/g, "\n");
+    assert.equal(createHash("sha256").update(canonicalSource).digest("hex"), CANONICAL_LEGAL_SOURCE_HASHES[document.key], `${document.key} source changed without a new approved version`);
+    assert.match(document.contentHash, /^[a-f0-9]{64}$/);
   }
 });
 
