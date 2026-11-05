@@ -3,6 +3,8 @@ import { AFFILIATE_COOKIE } from "@/lib/affiliates";
 import { cookieValue, recordAffiliateRawClick, storeAffiliateAttribution } from "@/lib/affiliate-attribution-store";
 import { shouldRecordAffiliateLanding } from "@/lib/affiliate-request";
 import { enforceRateLimit, publicRequestRateLimitKey } from "@/lib/request-security";
+import { publicSlugExists } from "@/lib/public-route-existence";
+import { publicSlugRoute } from "@/lib/public-slug-route";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const JSON_BODY_LIMIT = 1024 * 1024;
@@ -30,6 +32,8 @@ function isUploadPath(pathname: string) {
 }
 
 export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname === "/404") return NextResponse.next({ status: 404 });
+
   if (!SAFE_METHODS.has(request.method)) {
     const fetchSite = request.headers.get("sec-fetch-site");
     if (fetchSite === "cross-site") {
@@ -52,6 +56,19 @@ export async function proxy(request: NextRequest) {
       if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > maximumBytes) {
         return NextResponse.json({ error: "The request is too large." }, { status: 413 });
       }
+    }
+  }
+
+  if (request.method === "GET" || request.method === "HEAD") {
+    const publicRoute = publicSlugRoute(request.nextUrl.pathname);
+    const isOwnerPreview = publicRoute?.kind === "providers" && request.nextUrl.searchParams.get("preview") === "owner";
+    if (publicRoute && !isOwnerPreview && await publicSlugExists(publicRoute.kind, publicRoute.slug) === false) {
+      const notFoundUrl = request.nextUrl.clone();
+      notFoundUrl.pathname = "/404";
+      notFoundUrl.search = "";
+      const response = NextResponse.rewrite(notFoundUrl, { status: 404 });
+      response.headers.set("Cache-Control", "private, no-store, max-age=0");
+      return response;
     }
   }
 
@@ -112,5 +129,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/:path*", "/providers/join"],
+  matcher: ["/404", "/api/:path*", "/providers/:path*", "/services/:path*", "/companies/:path*"],
 };

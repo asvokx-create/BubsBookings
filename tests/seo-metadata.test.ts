@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { absolutePublicUrl, metadataDescription, publicPageMetadata, SITE_ORIGIN } from "../lib/seo.ts";
+import { publicSlugRoute } from "../lib/public-slug-route.ts";
 
 const projectRoot = process.cwd();
 const read = (...parts: string[]) => readFileSync(join(projectRoot, ...parts), "utf8");
@@ -115,6 +116,24 @@ test("public dynamic pages use canonical metadata, safe structured data, and rea
   assert.doesNotMatch(servicePage, /"@type": "LocalBusiness"/);
   assert.match(servicePage, /service\.imageUrls\.length \? \{ image: service\.imageUrls \} : \{\}/);
   assert.match(companyPage, /View full provider profile/);
+});
+
+test("public slug routes are rejected before streaming so missing resources return HTTP 404", () => {
+  assert.deepEqual(publicSlugRoute("/services/example-service"), { kind: "services", slug: "example-service" });
+  assert.deepEqual(publicSlugRoute("/providers/example-provider"), { kind: "providers", slug: "example-provider" });
+  assert.deepEqual(publicSlugRoute("/companies/example-company"), { kind: "companies", slug: "example-company" });
+  assert.equal(publicSlugRoute("/providers/join"), null);
+  assert.equal(publicSlugRoute("/services"), null);
+  assert.equal(publicSlugRoute("/services/example-service/opengraph-image"), null);
+
+  const proxy = read("proxy.ts");
+  assert.match(proxy, /pathname === "\/404"\) return NextResponse\.next\(\{ status: 404 \}\)/);
+  assert.match(proxy, /isOwnerPreview/);
+  assert.match(proxy, /publicSlugExists\(publicRoute\.kind, publicRoute\.slug\) === false/);
+  assert.match(proxy, /NextResponse\.rewrite\(notFoundUrl, \{ status: 404 \}\)/);
+  assert.match(proxy, /response\.headers\.set\("Cache-Control", "private, no-store, max-age=0"\)/);
+  assert.match(proxy, /"\/404", "\/api\/:path\*", "\/providers\/:path\*", "\/services\/:path\*", "\/companies\/:path\*"/);
+  assert.match(read("app", "404", "page.tsx"), /robots: \{ index: false, follow: false \}/);
 });
 
 test("linked service-card artwork has an accessible text alternative", () => {

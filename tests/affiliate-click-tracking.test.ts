@@ -47,7 +47,7 @@ test("every referral landing is counted while attribution retains first touch", 
   assert.match(proxy, /recordAffiliateRawClick/);
   assert.match(proxy, /storeAffiliateAttribution/);
   assert.ok(proxy.indexOf("recordAffiliateRawClick") < proxy.indexOf("storeAffiliateAttribution({"), "raw click storage must run before first-touch retention");
-  assert.match(proxy, /matcher: \["\/api\/:path\*", "\/providers\/join"\]/);
+  assert.match(proxy, /matcher: \["\/404", "\/api\/:path\*", "\/providers\/:path\*", "\/services\/:path\*", "\/companies\/:path\*"\]/);
   assert.match(proxy, /Cache-Control", "private, no-store/);
   assert.ok(store.indexOf('status: "retained"') < store.indexOf("INSERT INTO affiliate_clicks"));
   assert.match(store, /affiliate\.status = 'active'/);
