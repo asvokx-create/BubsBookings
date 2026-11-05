@@ -38,6 +38,11 @@ test("provider signup diagnostics distinguish page visits, submissions, failures
   assert.match(signupActions, /recordProviderSignupFailed/);
   assert.match(authForm, /recordProviderSignupSubmitted\(provider\)/);
   assert.match(authForm, /recordProviderSignupSubmitted\("email"\)/);
+  assert.match(authForm, /await recordProviderSignupSubmitted\(provider\)/);
+  assert.match(authForm, /await recordProviderSignupSubmitted\("email"\)/);
+  assert.match(signupActions, /export async function recordProviderSignupSubmitted/);
+  assert.match(signupActions, /Promise\.race/);
+  assert.match(signupActions, /setTimeout\(resolve, 1_000\)/);
   assert.match(authForm, /signupMethod === "google" \? "Continue with Google"/);
   assert.match(adminRoute, /total_referral_clicks/);
   assert.match(adminRoute, /signup_submissions/);

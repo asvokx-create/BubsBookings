@@ -37,6 +37,10 @@ test("admin affiliate analytics is server-authorized and separates raw clicks fr
   assert.match(route, /Admin access required/);
   assert.match(route, /FROM affiliate_click_events/);
   assert.match(route, /first_touch_visits FROM affiliate_clicks/);
+  assert.match(route, /first_touch_counts AS/);
+  assert.match(route, /COALESCE\(referrals\.range_registrations, 0\)::numeric \/ first_touches\.range_first_touch_visits/);
+  assert.match(route, /referrals\.signups::numeric \/ first_touches\.first_touch_visits/);
+  assert.doesNotMatch(route, /referrals\.range_registrations::numeric \/ clicks\.range_clicks/);
   assert.match(route, /FROM affiliate_referrals/);
   assert.match(route, /FROM affiliate_commissions/);
   assert.match(route, /FROM services service/);
@@ -52,7 +56,7 @@ test("admin analytics shows fixed click windows, conversions, and unavailable ra
   assert.match(component, /7 days/);
   assert.match(component, /30 days/);
   assert.match(component, /Published providers/);
-  assert.match(component, /Signup conversion/);
+  assert.match(component, /First-touch signup conversion/);
   assert.match(component, /Not available/);
   assert.match(component, /Times shown in UTC/);
 });

@@ -158,7 +158,7 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
 
     setError("");
     setSocialLoading(provider);
-    if (!isLogin && isProviderIntent) recordProviderSignupSubmitted(provider);
+    if (!isLogin && isProviderIntent) await recordProviderSignupSubmitted(provider);
     const errorCallbackURL = `/login?oauthError=1&redirect=${encodeURIComponent(redirectTo)}`;
     const newUserCallbackURL = `/account/settings?welcome=1&redirect=${encodeURIComponent(redirectTo)}`;
     const result = await authClient.signIn.social({
@@ -232,7 +232,7 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
       return;
     }
 
-    if (isProviderIntent) recordProviderSignupSubmitted("email");
+    if (isProviderIntent) await recordProviderSignupSubmitted("email");
     const signUpResult = await authClient.signUp.email({
       email,
       password,
