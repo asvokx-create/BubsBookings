@@ -346,24 +346,24 @@ export default function AdminDashboard({ adminName, adminImage = "" }: { adminNa
   return (
     <main className="admin-page min-h-screen overflow-x-clip bg-[#f4f4ef] text-[#183126]">
       <header className="border-b border-[#183126]/10 bg-white">
-        <div className="dashboard-container flex flex-wrap items-center justify-between gap-2 px-3 py-4 min-[360px]:px-4 sm:px-8">
-          <div className="flex shrink-0 items-center gap-4">
+        <div className="admin-header-shell dashboard-container flex flex-nowrap items-center justify-between gap-2 px-3 py-4 min-[360px]:px-4 sm:px-8">
+          <div className="flex shrink-0 items-center gap-3">
             <Link href="/" className="flex min-w-0 items-center gap-2.5 text-xl font-bold">
               <BrandLockup compact />
             </Link>
             <span className="hidden shrink-0 rounded-full bg-[#eee25a] px-3 py-1 text-xs font-extrabold uppercase tracking-wider sm:inline">Admin</span>
           </div>
-          <div aria-label="Admin account actions" className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 min-[360px]:gap-2 sm:gap-3">
-            <Link href="/admin/reported-bugs" className="admin-header-link hidden md:inline-flex">Bug reports</Link>
-            <Link href="/admin/disputes" className="admin-header-link hidden md:inline-flex">Disputes</Link>
+          <div aria-label="Admin account actions" className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-1 min-[360px]:gap-2 sm:gap-3">
+            <Link href="/admin/reported-bugs" className="admin-header-link hidden lg:inline-flex">Bug reports</Link>
+            <Link href="/admin/disputes" className="admin-header-link hidden lg:inline-flex">Disputes</Link>
             <Link href="/admin/support" className="admin-header-link hidden lg:inline-flex">Support</Link>
-            <Link href="/admin/affiliates" className="admin-header-link hidden xl:inline-flex">Partners</Link>
-            <Link href="/admin/operations" className="admin-header-link hidden xl:inline-flex">Operations</Link>
-            <Link href="/admin/integrations/calendly" className="admin-header-link hidden xl:inline-flex">Integrations</Link>
-            <Link href="/admin/jarvis" className="admin-header-link hidden xl:inline-flex">Jarvis</Link>
-            <Link href="/admin/growth" className="admin-header-link hidden xl:inline-flex">Growth</Link>
-            <Link href="/admin/expenses" className="admin-header-link hidden xl:inline-flex">Expenses</Link>
-            <Link href="/admin/requests" className="admin-header-link hidden xl:inline-flex">Requests</Link>
+            <Link href="/admin/affiliates" className="admin-header-link hidden min-[1700px]:inline-flex">Partners</Link>
+            <Link href="/admin/operations" className="admin-header-link hidden min-[1700px]:inline-flex">Operations</Link>
+            <Link href="/admin/integrations/calendly" className="admin-header-link hidden min-[1700px]:inline-flex">Integrations</Link>
+            <Link href="/admin/jarvis" className="admin-header-link hidden min-[1700px]:inline-flex">Jarvis</Link>
+            <Link href="/admin/growth" className="admin-header-link hidden min-[1700px]:inline-flex">Growth</Link>
+            <Link href="/admin/expenses" className="admin-header-link hidden min-[1700px]:inline-flex">Expenses</Link>
+            <Link href="/admin/requests" className="admin-header-link hidden min-[1700px]:inline-flex">Requests</Link>
             <Link href="/account" className="admin-marketplace-link hidden sm:inline-flex">View marketplace</Link>
             <span className="hidden min-[375px]:inline-flex"><ProfileAvatar name={adminName} imageUrl={adminImage} className="h-10 w-10 text-sm" /></span>
             <button onClick={signOut} className="min-h-11 rounded-full px-2.5 py-2 text-sm font-bold text-[#66766e] transition hover:bg-[#fff0e7] hover:text-[#8d4827] sm:px-3">Log out</button>

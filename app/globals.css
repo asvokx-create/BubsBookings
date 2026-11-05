@@ -3436,6 +3436,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--bb-forest-stro
 }
 .admin-header-link:hover { border-color: #b9cbbb; background: #e1eadf; color: #102d22; }
 .admin-header-link:focus-visible { outline: 3px solid rgba(21, 147, 93, .28); outline-offset: 2px; }
+.admin-page > header .admin-header-shell { max-width: none; }
 .admin-marketplace-link {
   min-height: 2.5rem;
   align-items: center;
