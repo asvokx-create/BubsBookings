@@ -68,7 +68,9 @@ test("local SEO pages exclude remote-only listings while the sitemap keeps every
   assert.match(source("app/locations/page.tsx"), /delivery: "IN_PERSON"/);
   assert.match(source("app/locations/[city]/page.tsx"), /delivery: "IN_PERSON"/);
   assert.match(source("app/locations/[city]/[category]/page.tsx"), /delivery: "IN_PERSON"/);
-  assert.match(source("app/sitemap.ts"), /getServices\(\{ limit: 1000 \}\)/);
+  assert.match(source("app/sitemap.ts"), /getPublicSeoInventory\(\)/);
+  assert.match(source("app/sitemap.ts"), /listing\.deliveryType === "REMOTE"/);
+  assert.doesNotMatch(source("app/sitemap.ts"), /limit: 1000/);
 });
 
 test("provider acquisition and guidance welcome local and remote professionals", () => {
@@ -109,7 +111,8 @@ test("remote provider profiles avoid blank local areas and label every service",
   assert.match(profile, /provider\.hasInPersonServices/);
   assert.match(profile, /ServiceListingCard/);
   assert.match(card, /service\.deliveryType === "REMOTE" \? "Online"/);
-  assert.match(profile, /provider\.hasInPersonServices \? "ProfessionalService" : "Organization"/);
+  assert.match(profile, /"@type": "Organization"/);
+  assert.match(profile, /"@type": "BreadcrumbList"/);
   assert.match(company, /hasRemoteServices && <span/);
   assert.match(company, /hasInPersonServices && company\.locations\.map/);
   assert.match(company, /ServiceListingCard/);

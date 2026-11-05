@@ -15,7 +15,7 @@ test("provider profile slugs are readable, stable, unique, and replace raw publi
   assert.match(migration, /UNIQUE INDEX[\s\S]*lower\(public_profile_slug\)/);
   assert.match(onboarding, /publicProfileSlug = existing\?\.public_profile_slug/);
   assert.doesNotMatch(onboarding, /DO UPDATE SET[\s\S]*public_profile_slug = EXCLUDED/);
-  assert.match(sitemap, /service\.providerSlug/);
+  assert.match(sitemap, /listing\.providerSlug/);
   assert.doesNotMatch(sitemap, /providers\/\$\{providerId\}/);
 });
 
@@ -79,7 +79,8 @@ test("profiles connect to messages, listings, sharing, QR codes, SEO, analytics,
   const analytics = read("app", "api", "analytics", "route.ts");
   const admin = read("app", "api", "admin", "route.ts");
   assert.match(page, /<ContactProviderLink/);
-  assert.match(page, /ProfessionalService/);
+  assert.match(page, /"@type": "Organization"/);
+  assert.match(page, /"@type": "BreadcrumbList"/);
   assert.match(page, /openGraph/);
   assert.match(share, /providerSlug/);
   assert.match(marketing, /Provider profile QR · separate from listing QR codes/);

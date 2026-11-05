@@ -20,24 +20,27 @@ import ListingShareButton from "@/components/listing-share-button";
 import { deliveryLabel } from "@/lib/service-delivery";
 import UiIcon from "@/components/ui-icon";
 import { formatHourlyRate } from "@/lib/service-pricing";
+import { absolutePublicUrl, metadataDescription } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps<"/services/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const service = await getServiceBySlug(slug);
-  if (!service) return {};
+  if (!service) notFound();
   const placeDescription = service.deliveryType === "REMOTE" ? "Available remotely across the United States." : `Available in ${service.city}, ${service.state}.`;
   const priceLabel = service.pricingType === "QUOTE_ONLY" ? "Personalized quote available" : service.pricingType === "HOURLY" && service.hourlyRateCents !== null ? formatHourlyRate(service.hourlyRateCents) : `starting at $${service.price}`;
-  const description = `${service.title}. ${placeDescription} ${priceLabel}. ${service.description}`.slice(0, 160);
+  const description = metadataDescription([`Explore ${service.title} from ${service.provider}.`, placeDescription, `${priceLabel}.`, service.description]);
   const socialTitle = `${service.title} | BubsBookings`;
   const fallbackImage = `/services/${service.slug}/opengraph-image`;
   const socialImage = service.imageUrls[0] ? { url: service.imageUrls[0], alt: `${service.title} by ${service.provider}` } : { url: fallbackImage, width: 1200, height: 630, alt: `${service.title} on BubsBookings` };
+  const canonical = absolutePublicUrl(`/services/${service.slug}`);
   return {
     title: service.deliveryType === "REMOTE" ? service.title : `${service.title} in ${service.city}, ${service.state}`,
     description,
-    alternates: { canonical: `/services/${service.slug}` },
-    openGraph: { type: "website", siteName: "BubsBookings", title: socialTitle, description, url: `/services/${service.slug}`, images: [socialImage] },
+    alternates: { canonical },
+    robots: { index: true, follow: true },
+    openGraph: { type: "website", siteName: "BubsBookings", title: socialTitle, description, url: canonical, images: [socialImage] },
     twitter: { card: "summary_large_image", title: socialTitle, description, images: [service.imageUrls[0] ?? fallbackImage] },
   };
 }
@@ -59,21 +62,35 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
   const priceLabel = service.pricingType === "QUOTE_ONLY" ? "Request a Quote" : service.pricingType === "HOURLY" && service.hourlyRateCents !== null ? formatHourlyRate(service.hourlyRateCents) : `$${service.price}`;
   const serviceArea = service.deliveryType === "REMOTE" ? undefined : getServiceAreaCoordinates(`${service.city}, ${service.state}`);
   const localCategoryHref = serviceArea ? `/locations/${serviceAreaSlug(serviceArea)}/${serviceCategorySlug(service.category)}` : null;
-  const jsonLd = {
-    "@context": "https://schema.org",
+  const canonical = absolutePublicUrl(`/services/${service.slug}`);
+  const providerUrl = service.companySlug
+    ? absolutePublicUrl(`/companies/${service.companySlug}`)
+    : service.providerProfileVisible && service.providerSlug
+      ? absolutePublicUrl(`/providers/${service.providerSlug}`)
+      : undefined;
+  const serviceJsonLd = {
     "@type": "Service",
+    "@id": `${canonical}#service`,
     name: service.title,
     description: service.description,
-    url: `https://bubsbookings.com/services/${service.slug}`,
-    image: service.imageUrls,
+    url: canonical,
+    ...(service.imageUrls.length ? { image: service.imageUrls } : {}),
     areaServed: service.deliveryType === "REMOTE" ? { "@type": "Country", name: "United States" } : { "@type": "City", name: `${service.city}, ${service.state}` },
-    provider: service.deliveryType === "REMOTE"
-      ? { "@type": "Organization", name: service.provider, url: `https://bubsbookings.com/${service.companySlug ? `companies/${service.companySlug}` : `providers/${service.providerId}`}` }
-      : { "@type": "LocalBusiness", name: service.provider, url: `https://bubsbookings.com/${service.companySlug ? `companies/${service.companySlug}` : `providers/${service.providerId}`}`, address: { "@type": "PostalAddress", addressLocality: service.city, addressRegion: service.state, addressCountry: "US" } },
+    provider: { "@type": "Organization", name: service.provider, ...(providerUrl ? { url: providerUrl } : {}) },
     ...(service.pricingType === "QUOTE_ONLY" ? {} : { offers: { "@type": "Offer", priceCurrency: "USD", price: service.price,
       priceSpecification: service.pricingType === "HOURLY" ? { "@type": "UnitPriceSpecification", price: service.price, priceCurrency: "USD", unitText: "HOUR" } : undefined,
       description: service.pricingType === "HOURLY" ? `Hourly rate. Minimum booking ${service.minimumDurationMinutes} minutes.` : "Starting price; the provider may send a revised quote before confirmation." },
     }),
+  };
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      serviceJsonLd,
+      { "@type": "BreadcrumbList", itemListElement: [
+        { "@type": "ListItem", position: 1, name: "BubsBookings", item: absolutePublicUrl("/") },
+        { "@type": "ListItem", position: 2, name: service.title, item: canonical },
+      ] },
+    ],
   };
 
   return (
@@ -102,6 +119,7 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
                 <div className="service-detail-provider">
                   <span className="text-[#718078]">Offered by {service.companySlug ? <ExplainedUi id="service-provider-help" interactive explanation="This is the business responsible for delivering the service. Open the business name to see its public page and related services."><Link href={`/companies/${service.companySlug}`} className="font-bold text-[#183126] underline decoration-[#c7bb41] decoration-2 underline-offset-4">{service.provider}</Link></ExplainedUi> : service.providerProfileVisible ? <ExplainedUi id="service-provider-help" interactive explanation="This is the provider responsible for delivering the service. Open the provider name to see their public profile and other services."><Link href={`/providers/${service.providerSlug}`} className="font-bold text-[#183126] underline decoration-[#c7bb41] decoration-2 underline-offset-4">{service.provider}</Link></ExplainedUi> : <ExplainedUi id="service-provider-help" explanation="This is the provider responsible for delivering the service. Their public provider profile is not currently available."><strong className="text-[#183126]">{service.provider}</strong></ExplainedUi>}</span>
                   {service.companySlug && service.deliveryType !== "REMOTE" && <ExplainedUi id="business-location-help" interactive explanation="Opens the provider's public business-location page with the services offered from that location."><Link href={`/companies/${service.companySlug}`} className="font-bold text-[#4f6d5a] underline underline-offset-4">View business location</Link></ExplainedUi>}
+                  {service.companySlug && service.providerProfileVisible && service.providerSlug && <Link href={`/providers/${service.providerSlug}`} className="font-bold text-[#4f6d5a] underline underline-offset-4">View provider profile</Link>}
                 </div>
                 {(service.profileScreened || service.emailVerified || service.businessVerified) && <div className="service-detail-trust">
                   {service.profileScreened && <ExplainedUi id="profile-screened-help" explanation="The provider's required profile fields and active listings passed BubsBookings' automated completeness and safety checks. This is not a background check."><span className="trust-badge--verified rounded-full bg-[#edf2e9] px-3 py-1 text-xs font-bold text-[#4f6d5a]">✓ Profile screened</span></ExplainedUi>}

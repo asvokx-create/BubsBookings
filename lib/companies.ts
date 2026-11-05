@@ -12,6 +12,8 @@ export type CompanyPage = {
   city: string;
   state: string;
   publicOwnerName: string | null;
+  providerSlug: string;
+  providerProfileVisible: boolean;
   verified: boolean;
   locations: Array<{ id: string; name: string; city: string; state: string; serviceRadiusMiles: number }>;
   services: Array<{
@@ -35,10 +37,11 @@ export async function getCompanyBySlug(slug: string): Promise<CompanyPage | null
   if (!isDatabaseConfigured()) return null;
   const companyResult = await database.query<{
     id: string; slug: string; name: string; bio: string; city: string; state: string;
-    public_owner_name: string | null; is_verified: boolean; screening_status: string; screening_checked_at: Date | null;
+    public_owner_name: string | null; provider_slug: string; provider_profile_visible: boolean; is_verified: boolean; screening_status: string; screening_checked_at: Date | null;
   }>(
     `SELECT company.id::text, company.slug, company.name, company.bio, company.city, company.state,
             CASE WHEN COALESCE(settings.public_personal_name_visible, false) THEN owner.name ELSE NULL END AS public_owner_name,
+            provider.public_profile_slug AS provider_slug, provider.public_profile_visible AS provider_profile_visible,
             provider.is_verified, provider.screening_status, provider.screening_checked_at
      FROM provider_companies company
      JOIN provider_profiles provider ON provider.id = company.provider_id
@@ -79,6 +82,8 @@ export async function getCompanyBySlug(slug: string): Promise<CompanyPage | null
     city: company.city,
     state: company.state,
     publicOwnerName: company.public_owner_name,
+    providerSlug: company.provider_slug,
+    providerProfileVisible: company.provider_profile_visible,
     verified: screeningCurrent && company.is_verified && company.screening_status === "passed",
     locations: locationResult.rows.map((location) => ({ id: location.id, name: location.name, city: location.city, state: location.state, serviceRadiusMiles: location.service_radius_miles })),
     services: serviceResult.rows.map((service) => ({

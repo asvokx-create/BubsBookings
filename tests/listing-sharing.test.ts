@@ -56,7 +56,8 @@ test("listing previews use a primary photo or a branded 1200 by 630 fallback", (
   assert.match(listing, /service\.imageUrls\[0\]/);
   assert.match(listing, /twitter: \{ card: "summary_large_image"/);
   assert.match(listing, /siteName: "BubsBookings"/);
-  assert.match(listing, /alternates: \{ canonical: `\/services\/\$\{service\.slug\}` \}/);
+  assert.match(listing, /const canonical = absolutePublicUrl\(`\/services\/\$\{service\.slug\}`\)/);
+  assert.match(listing, /alternates: \{ canonical \}/);
   assert.match(fallback, /width: 1200, height: 630/);
   assert.match(fallback, /Bubs/);
   assert.match(fallback, /Bookings/);

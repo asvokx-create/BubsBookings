@@ -7,6 +7,7 @@ import { getServices } from "@/lib/marketplace";
 import ServiceCategoryIcon from "@/components/service-category-icon";
 import { getServiceCategoryBySlug, serviceCategorySlug } from "@/lib/service-categories";
 import { getServiceAreaBySlug, serviceAreaLabel, serviceAreaSlug } from "@/lib/service-areas";
+import { absolutePublicUrl } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
@@ -26,16 +27,16 @@ async function getPageData(params: LocalCategoryPageProps["params"]) {
 
 export async function generateMetadata({ params }: LocalCategoryPageProps): Promise<Metadata> {
   const data = await getPageData(params);
-  if (!data) return {};
+  if (!data) notFound();
   const { area, category, services } = data;
-  const canonical = `/locations/${serviceAreaSlug(area)}/${serviceCategorySlug(category)}`;
+  const canonical = absolutePublicUrl(`/locations/${serviceAreaSlug(area)}/${serviceCategorySlug(category)}`);
   const title = `${category} in ${area.city}, ${area.state}`;
   const description = `Compare ${category.toLowerCase()} providers serving ${area.city}, ${area.state}. View local prices, photos, service details, and availability on BubsBookings.`;
   return {
     title,
     description,
     alternates: { canonical },
-    robots: services.length ? undefined : { index: false, follow: true },
+    robots: services.length ? { index: true, follow: true } : { index: false, follow: true },
     openGraph: { title, description, url: canonical, type: "website", images: services[0]?.imageUrls[0] ? [services[0].imageUrls[0]] : undefined },
   };
 }

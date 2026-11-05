@@ -14,19 +14,28 @@ import ServiceListingCard from "@/components/service-listing-card";
 import UiIcon from "@/components/ui-icon";
 import { getProviderBySlug, getServiceVisual } from "@/lib/marketplace";
 import { getProviderAccess } from "@/lib/provider-access";
+import { absolutePublicUrl, metadataDescription } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 const dayNames = ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"];
 
-export async function generateMetadata({ params }: PageProps<"/providers/[slug]">): Promise<Metadata> {
+export async function generateMetadata({ params, searchParams }: PageProps<"/providers/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const provider = await getProviderBySlug(slug);
-  if (!provider) return {};
+  if (!provider) {
+    const query = await searchParams;
+    if (query.preview === "owner") return { title: "Private provider preview", robots: { index: false, follow: false } };
+    notFound();
+  }
   const title = provider.hasInPersonServices ? `${provider.businessName} in ${provider.city}, ${provider.state}` : `${provider.businessName} online services`;
-  const description = (provider.bio || `Explore services from ${provider.businessName} on BubsBookings.`).slice(0, 160);
+  const serviceSummary = provider.services.slice(0, 2).map((service) => service.title).join(" and ");
+  const availability = provider.hasRemoteServices && provider.hasInPersonServices
+    ? `Available online and near ${provider.city}, ${provider.state}.`
+    : provider.hasRemoteServices ? "Available online across the United States." : `Serving ${provider.city}, ${provider.state}.`;
+  const description = metadataDescription([`Explore ${serviceSummary || "services"} from ${provider.businessName}.`, availability, provider.bio]);
   const image = provider.portfolio[0]?.url || provider.profileImageUrl || provider.services[0]?.imageUrls[0];
-  const canonical = `/providers/${provider.publicSlug}`;
-  return { title, description, alternates: { canonical }, openGraph: { title, description, url: canonical, type: "website", images: image ? [{ url: image }] : undefined }, twitter: { card: image ? "summary_large_image" : "summary", title, description, images: image ? [image] : undefined } };
+  const canonical = absolutePublicUrl(`/providers/${provider.publicSlug}`);
+  return { title, description, alternates: { canonical }, robots: { index: true, follow: true }, openGraph: { siteName: "BubsBookings", title, description, url: canonical, type: "website", images: image ? [{ url: image, alt: `${provider.businessName} services` }] : undefined }, twitter: { card: image ? "summary_large_image" : "summary", title, description, images: image ? [image] : undefined } };
 }
 
 export default async function ProviderProfilePage({ params, searchParams }: PageProps<"/providers/[slug]">) {
@@ -48,7 +57,14 @@ export default async function ProviderProfilePage({ params, searchParams }: Page
   const visual = getServiceVisual(featured?.category ?? "service");
   const averageRating = provider.reviews.length ? provider.reviews.reduce((sum, review) => sum + review.rating, 0) / provider.reviews.length : null;
   const serviceAreas = provider.serviceAreas.length ? provider.serviceAreas : provider.hasInPersonServices ? [`${provider.city}, ${provider.state}`] : [];
-  const structuredData = { "@context": "https://schema.org", "@type": provider.hasInPersonServices ? "ProfessionalService" : "Organization", name: provider.businessName, description: provider.bio || undefined, url: `https://bubsbookings.com/providers/${provider.publicSlug}`, image: heroImage || provider.profileImageUrl || undefined, areaServed: provider.hasRemoteServices ? [{ "@type": "Country", name: "United States" }, ...serviceAreas.map((area) => ({ "@type": "City", name: area }))] : serviceAreas.map((area) => ({ "@type": "City", name: area })), aggregateRating: averageRating ? { "@type": "AggregateRating", ratingValue: Number(averageRating.toFixed(1)), reviewCount: provider.reviews.length } : undefined, makesOffer: provider.services.map((service) => ({ "@type": "Offer", ...(service.pricingType === "QUOTE_ONLY" ? {} : { priceCurrency: "USD", price: service.price, priceSpecification: service.pricingType === "HOURLY" ? { "@type": "UnitPriceSpecification", price: service.price, priceCurrency: "USD", unitText: "HOUR" } : undefined }), url: `https://bubsbookings.com/services/${service.slug}`, itemOffered: { "@type": "Service", name: service.title, areaServed: service.deliveryType === "REMOTE" ? "United States" : service.deliveryType === "BOTH" ? ["United States", `${service.city}, ${service.state}`] : `${service.city}, ${service.state}` } })) };
+  const canonical = absolutePublicUrl(`/providers/${provider.publicSlug}`);
+  const structuredData = { "@context": "https://schema.org", "@graph": [
+    { "@type": "Organization", "@id": `${canonical}#provider`, name: provider.businessName, description: provider.bio || undefined, url: canonical, image: heroImage || provider.profileImageUrl || undefined, areaServed: provider.hasRemoteServices ? [{ "@type": "Country", name: "United States" }, ...serviceAreas.map((area) => ({ "@type": "City", name: area }))] : serviceAreas.map((area) => ({ "@type": "City", name: area })), aggregateRating: averageRating ? { "@type": "AggregateRating", ratingValue: Number(averageRating.toFixed(1)), reviewCount: provider.reviews.length } : undefined, makesOffer: provider.services.map((service) => ({ "@type": "Offer", ...(service.pricingType === "QUOTE_ONLY" ? {} : { priceCurrency: "USD", price: service.price, priceSpecification: service.pricingType === "HOURLY" ? { "@type": "UnitPriceSpecification", price: service.price, priceCurrency: "USD", unitText: "HOUR" } : undefined }), url: absolutePublicUrl(`/services/${service.slug}`), itemOffered: { "@type": "Service", name: service.title, areaServed: service.deliveryType === "REMOTE" ? "United States" : service.deliveryType === "BOTH" ? ["United States", `${service.city}, ${service.state}`] : `${service.city}, ${service.state}` } })) },
+    { "@type": "BreadcrumbList", itemListElement: [
+      { "@type": "ListItem", position: 1, name: "BubsBookings", item: absolutePublicUrl("/") },
+      { "@type": "ListItem", position: 2, name: provider.businessName, item: canonical },
+    ] },
+  ] };
   const availabilityLabel = provider.hasRemoteServices && !provider.hasInPersonServices
     ? "Available online across the United States"
     : provider.hasRemoteServices
@@ -62,7 +78,7 @@ export default async function ProviderProfilePage({ params, searchParams }: Page
       <BackButton label="Back to services" fallbackHref="/services" />
       {isOwnerPreview && <aside className="mt-5 flex flex-col justify-between gap-3 rounded-2xl border border-[#c7bb41]/40 bg-[#fff9d8] px-5 py-4 sm:flex-row sm:items-center" aria-label="Private profile preview"><div><p className="text-sm font-bold">Private preview</p><p className="mt-1 text-sm text-[#65736b]">Only you can see this version. Your profile needs to be visible and have an active service before customers can open it.</p></div><Link href="/provider/dashboard/profile" className="inline-flex min-h-10 shrink-0 items-center justify-center rounded-full bg-[#183126] px-4 py-2 text-sm font-bold text-white">Return to editor</Link></aside>}
       <section className="mt-6 overflow-hidden rounded-[2rem] border border-[#183126]/10 bg-white shadow-[0_12px_40px_rgba(24,49,38,.08)] sm:rounded-[2.5rem]">
-        <div role="img" aria-label={heroImage ? `${provider.businessName} portfolio` : `${provider.businessName} service artwork`} style={heroImage ? { backgroundImage: `url("${heroImage}")` } : undefined} className={`relative h-40 bg-cover bg-center sm:h-56 ${heroImage ? "bg-[#e5e8e2]" : `bg-gradient-to-br ${visual.gradient}`}`}>{!heroImage && <ServiceCategoryIcon category={featured?.category ?? ""} className="!absolute bottom-5 right-7 h-24 min-h-24 w-24 min-w-24 opacity-90 [&_svg]:h-16 [&_svg]:w-16" />}</div>
+        {heroImage ? <div className="relative h-40 overflow-hidden bg-[#e5e8e2] sm:h-56"><Image src={heroImage} alt={`${provider.businessName} portfolio`} fill preload unoptimized sizes="(max-width: 1280px) 100vw, 1200px" className="object-cover" /></div> : <div role="img" aria-label={`${provider.businessName} service artwork`} className={`relative h-40 bg-gradient-to-br sm:h-56 ${visual.gradient}`}><ServiceCategoryIcon category={featured?.category ?? ""} className="!absolute bottom-5 right-7 h-24 min-h-24 w-24 min-w-24 opacity-90 [&_svg]:h-16 [&_svg]:w-16" /></div>}
         <div className="relative px-5 pb-7 sm:px-9 sm:pb-9">
           <ProfileAvatar name={provider.businessName} imageUrl={provider.profileImageUrl} className="-mt-11 h-[5.5rem] w-[5.5rem] rounded-[1.5rem] border-4 border-white text-2xl shadow-lg sm:h-24 sm:w-24" />
           <div className="mt-5 flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div className="min-w-0"><div className="flex flex-wrap items-center gap-3"><h1 className="break-words text-3xl font-bold tracking-[-.04em] sm:text-4xl">{provider.businessName}</h1>{provider.isVerified && <span className="rounded-full bg-[#edf2e9] px-3 py-1 text-xs font-bold text-[#4f6d5a]">✓ Profile screened</span>}</div><p className="mt-2 text-[#6b7b73]">{availabilityLabel}</p><div className="mt-3 flex flex-wrap gap-2">{averageRating && <span className="rounded-full bg-[#fff8d2] px-3 py-1 text-xs font-bold">★ {averageRating.toFixed(1)} · {provider.reviews.length} verified {provider.reviews.length === 1 ? "review" : "reviews"}</span>}{provider.completedBookingCount > 0 && <span className="rounded-full bg-[#e5f1e5] px-3 py-1 text-xs font-bold">{provider.completedBookingCount} completed {provider.completedBookingCount === 1 ? "booking" : "bookings"}</span>}{provider.emailVerified && <span className="rounded-full bg-[#e5f1e5] px-3 py-1 text-xs font-bold">✓ Email verified</span>}{provider.businessVerified && <span className="rounded-full bg-[#fff3b0] px-3 py-1 text-xs font-bold">✓ Business profile checked</span>}</div></div><div className="flex flex-wrap gap-2"><ContactProviderLink providerId={provider.id} serviceId={featured?.id} className="inline-flex min-h-12 items-center rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]" /><ListingShareButton providerSlug={provider.publicSlug} title={provider.businessName} description={`Explore ${provider.businessName} on BubsBookings.`} />{featured && <Link href={`/services/${featured.slug}`} className="inline-flex min-h-12 items-center rounded-full bg-[#eee25a] px-5 py-3 text-sm font-bold">View services</Link>}</div></div>

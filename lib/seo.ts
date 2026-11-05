@@ -8,6 +8,14 @@ export function absolutePublicUrl(pathname: string) {
   return normalizedPathname === "/" ? SITE_ORIGIN : new URL(normalizedPathname, SITE_ORIGIN).toString();
 }
 
+export function metadataDescription(parts: Array<string | null | undefined>, maxLength = 160) {
+  const value = parts.filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  if (value.length <= maxLength) return value;
+  const shortened = value.slice(0, Math.max(1, maxLength - 1));
+  const wordBoundary = shortened.lastIndexOf(" ");
+  return `${(wordBoundary >= Math.floor(maxLength * 0.7) ? shortened.slice(0, wordBoundary) : shortened).replace(/[,:;.!?\s]+$/g, "")}…`;
+}
+
 export function publicPageMetadata({
   title,
   description,

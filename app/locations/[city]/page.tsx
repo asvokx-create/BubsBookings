@@ -7,6 +7,7 @@ import { notFound } from "next/navigation";
 import { getServices } from "@/lib/marketplace";
 import { FEATURED_SERVICE_CATEGORIES, serviceCategorySlug } from "@/lib/service-categories";
 import { getServiceAreaBySlug, SERVICE_AREAS, serviceAreaLabel, serviceAreaSlug } from "@/lib/service-areas";
+import { absolutePublicUrl } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
@@ -15,11 +16,12 @@ export function generateStaticParams() { return SERVICE_AREAS.map((area) => ({ c
 export async function generateMetadata({ params }: PageProps<"/locations/[city]">): Promise<Metadata> {
   const { city } = await params;
   const area = getServiceAreaBySlug(city);
-  if (!area) return {};
+  if (!area) notFound();
   const title = `Local services in ${area.city}, ${area.state}`;
   const description = `Find and compare local service providers near ${area.city}, ${area.state} on BubsBookings.`;
   const services = await getServices({ delivery: "IN_PERSON", location: serviceAreaLabel(area), radiusMiles: 25, limit: 1 }).catch(() => []);
-  return { title, description, alternates: { canonical: `/locations/${serviceAreaSlug(area)}` }, robots: services.length ? undefined : { index: false, follow: true }, openGraph: { title, description, url: `/locations/${serviceAreaSlug(area)}` } };
+  const canonical = absolutePublicUrl(`/locations/${serviceAreaSlug(area)}`);
+  return { title, description, alternates: { canonical }, robots: services.length ? { index: true, follow: true } : { index: false, follow: true }, openGraph: { title, description, url: canonical } };
 }
 
 export default async function LocationPage({ params }: PageProps<"/locations/[city]">) {

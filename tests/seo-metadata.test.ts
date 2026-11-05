@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
-import { absolutePublicUrl, publicPageMetadata, SITE_ORIGIN } from "../lib/seo.ts";
+import { absolutePublicUrl, metadataDescription, publicPageMetadata, SITE_ORIGIN } from "../lib/seo.ts";
 
 const projectRoot = process.cwd();
 const read = (...parts: string[]) => readFileSync(join(projectRoot, ...parts), "utf8");
@@ -21,6 +21,17 @@ test("public metadata uses one absolute canonical URL for canonical and Open Gra
   assert.equal(metadata.openGraph?.url, metadata.alternates?.canonical);
   assert.equal(metadata.openGraph?.siteName, "BubsBookings");
   assert.match(read("lib", "seo.ts"), /DEFAULT_SOCIAL_IMAGE = "\/brand-logo\.jpg"/);
+});
+
+test("dynamic metadata descriptions stay readable and within the search snippet budget", () => {
+  const description = metadataDescription([
+    "Explore workflow automation from Streamlining Your Business.",
+    "Available online across the United States.",
+    "Automate Airtable and Insightly CRM workflows without repetitive manual entry.",
+  ]);
+  assert.ok(description.length <= 160);
+  assert.match(description, /…$/);
+  assert.doesNotMatch(description, /\s…$/);
 });
 
 test("shared SEO configuration serves complete head metadata and one public host", () => {
@@ -77,10 +88,33 @@ test("sitemap and robots rules cover public discovery while protecting private a
   assert.match(sitemap, /"\/provider-safety", "\/partner-agreement", "\/marketing-communications"/);
   assert.match(sitemap, /"\/content-removal", "\/dmca", "\/accessibility"/);
   assert.match(sitemap, /GUIDES\.map/);
-  assert.match(sitemap, /services\.map/);
-  assert.match(sitemap, /providerSlugs\.map/);
+  assert.match(sitemap, /getPublicSeoInventory/);
+  assert.match(sitemap, /listings\.map/);
+  assert.match(sitemap, /providerPages/);
+  assert.match(sitemap, /lastModified/);
+  assert.match(sitemap, /images: listing\.imageUrls/);
+  assert.doesNotMatch(sitemap, /limit:\s*1000/);
   assert.match(robots, /sitemap: "https:\/\/bubsbookings\.com\/sitemap\.xml"/);
   assert.match(robots, /disallow: \["\/account\/", "\/provider\/dashboard\/", "\/admin\/", "\/api\/"\]/);
+});
+
+test("public dynamic pages use canonical metadata, safe structured data, and real 404 handling", () => {
+  const servicePage = read("app", "services", "[slug]", "page.tsx");
+  const providerPage = read("app", "providers", "[slug]", "page.tsx");
+  const companyPage = read("app", "companies", "[slug]", "page.tsx");
+
+  for (const page of [servicePage, providerPage, companyPage]) {
+    assert.match(page, /absolutePublicUrl/);
+    assert.match(page, /notFound\(\)/);
+    assert.match(page, /"@type": "BreadcrumbList"/);
+  }
+  for (const page of [servicePage, providerPage]) assert.match(page, /robots: \{ index: true, follow: true \}/);
+  assert.match(companyPage, /robots: company\.services\.length \? \{ index: true, follow: true \} : \{ index: false, follow: true \}/);
+  assert.match(servicePage, /metadataDescription/);
+  assert.doesNotMatch(servicePage, /providers\/\$\{service\.providerId\}/);
+  assert.doesNotMatch(servicePage, /"@type": "LocalBusiness"/);
+  assert.match(servicePage, /service\.imageUrls\.length \? \{ image: service\.imageUrls \} : \{\}/);
+  assert.match(companyPage, /View full provider profile/);
 });
 
 test("linked service-card artwork has an accessible text alternative", () => {
