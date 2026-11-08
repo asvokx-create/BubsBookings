@@ -10,7 +10,7 @@ import { refundUnreleasedBooking } from "@/lib/payment-release";
 import { unavailableBookingProfessionals } from "@/lib/booking-staff";
 import { calculateHourlyBasePriceCents, validateHourlyDuration, type HourlyPricingConfig } from "@/lib/service-pricing";
 
-type BookingAction = "accepted" | "declined" | "completed" | "cancel" | "approve_reschedule" | "decline_reschedule" | "assign" | "send_quote";
+type BookingAction = "accepted" | "declined" | "completed" | "cancel" | "assign" | "send_quote";
 
 export async function DELETE(_request: Request, context: RouteContext<"/api/providers/bookings/[bookingId]">) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -38,11 +38,11 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
   const { bookingId } = await context.params;
   const body = (await request.json()) as { action?: unknown; reason?: unknown; memberId?: unknown; memberIds?: unknown; price?: unknown; hourlyRate?: unknown; durationMinutes?: unknown };
   const action = body.action as BookingAction;
-  if (!(["accepted", "declined", "completed", "cancel", "approve_reschedule", "decline_reschedule", "assign", "send_quote"] as BookingAction[]).includes(action)) {
+  if (!(["accepted", "declined", "completed", "cancel", "assign", "send_quote"] as BookingAction[]).includes(action)) {
     return NextResponse.json({ error: "Choose a valid booking action." }, { status: 400 });
   }
   const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-  if ((action === "declined" || action === "cancel" || action === "decline_reschedule" || action === "send_quote") && (reason.length < 3 || reason.length > 500)) {
+  if ((action === "declined" || action === "cancel" || action === "send_quote") && (reason.length < 3 || reason.length > 500)) {
     return NextResponse.json({ error: "Add a brief reason so the customer knows what happened." }, { status: 400 });
   }
   if (reason) {
@@ -83,7 +83,7 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "Booking not found." }, { status: 404 });
     }
-    if (booking.age_verification_status !== "verified" && !["declined", "cancel", "decline_reschedule"].includes(action)) {
+    if (booking.age_verification_status !== "verified" && !["declined", "cancel"].includes(action)) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "Complete provider age verification before accepting, assigning, quoting, or completing bookings." }, { status: 403 });
     }
@@ -177,65 +177,6 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
       await client.query("UPDATE bookings SET assigned_team_member_id = $2::uuid WHERE id::text = $1", [bookingId, primaryMemberId]);
       await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
         VALUES ($1::uuid, $2, 'assigned', $3)`, [bookingId, session.user.id, `Booking assigned to ${selected.map((professional) => professional.name).join(", ")}.`]);
-    } else if (action === "approve_reschedule" || action === "decline_reschedule") {
-      if (!booking.reschedule_starts_at || !booking.reschedule_ends_at || !["requested", "confirmed"].includes(booking.status)) {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: "There is no active reschedule request." }, { status: 409 });
-      }
-      if (action === "approve_reschedule") {
-        if (booking.status === "requested" && (booking.quote_status === "pending" || booking.quote_status === "declined")) {
-          await client.query("ROLLBACK");
-          return NextResponse.json({ error: booking.quote_status === "pending" ? "The customer must approve or decline the quote before this request can be confirmed." : "Send a revised quote before confirming this request." }, { status: 409 });
-        }
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [booking.provider_id]);
-        const unavailable = await unavailableBookingProfessionals(client, { bookingId, providerId: booking.provider_id,
-          serviceId: booking.service_id, startsAt: booking.reschedule_starts_at, endsAt: booking.reschedule_ends_at });
-        if (unavailable.length) {
-          await client.query("ROLLBACK");
-          return NextResponse.json({ error: `${unavailable.join(", ")} ${unavailable.length === 1 ? "is" : "are"} unavailable at that time.` }, { status: 409 });
-        }
-        await client.query(`UPDATE bookings SET starts_at = reschedule_starts_at, ends_at = reschedule_ends_at,
-          status = CASE WHEN status = 'requested' THEN 'confirmed' ELSE status END,
-          reschedule_requested_by = NULL, reschedule_starts_at = NULL, reschedule_ends_at = NULL,
-          reschedule_reason = NULL, reschedule_requested_at = NULL WHERE id::text = $1`, [bookingId]);
-        await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
-          VALUES ($1::uuid, $2, 'reschedule_approved', 'Provider approved the new booking time.')`, [bookingId, session.user.id]);
-        await client.query(`WITH cancelled AS (
-          UPDATE bookings SET status = 'cancelled', cancelled_by = 'system',
-            cancellation_reason = 'The provider accepted another booking for this time.'
-          WHERE provider_id::text = $1 AND id::text <> $2 AND status = 'requested'
-            AND starts_at < $4 AND ends_at > $3
-            AND EXISTS (
-              SELECT 1 FROM booking_assignees requested_assignment
-              JOIN booking_assignees accepted_assignment ON accepted_assignment.booking_id::text = $2
-                AND ((requested_assignment.is_owner = true AND accepted_assignment.is_owner = true)
-                  OR (requested_assignment.team_member_id IS NOT NULL AND requested_assignment.team_member_id = accepted_assignment.team_member_id))
-              WHERE requested_assignment.booking_id = bookings.id
-            )
-          RETURNING id, customer_id, service_id
-        ), events AS (
-          INSERT INTO booking_events (booking_id, event_type, message)
-          SELECT id, 'cancelled', 'Requested time became unavailable after another booking was confirmed.' FROM cancelled
-          RETURNING booking_id
-        )
-        INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-        SELECT cancelled.customer_id, cancelled.id, 'booking_declined', 'Requested time unavailable',
-          'Another booking was confirmed for the time you requested for ' || s.title || '. Please choose another time.',
-          '/account/bookings/' || cancelled.id::text, 'booking-conflict-' || cancelled.id::text || '-customer'
-        FROM cancelled JOIN services s ON s.id = cancelled.service_id JOIN events ON events.booking_id = cancelled.id
-        ON CONFLICT (dedupe_key) DO NOTHING`, [booking.provider_id, bookingId, booking.reschedule_starts_at, booking.reschedule_ends_at]);
-      } else {
-        await client.query(`UPDATE bookings SET reschedule_requested_by = NULL, reschedule_starts_at = NULL,
-          reschedule_ends_at = NULL, reschedule_reason = NULL, reschedule_requested_at = NULL WHERE id::text = $1`, [bookingId]);
-        await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
-          VALUES ($1::uuid, $2, 'reschedule_declined', $3)`, [bookingId, session.user.id, `Provider declined the new time: ${reason}`]);
-      }
-      await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-        VALUES ($1, $2::uuid, 'booking_reschedule', $3, $4, '/account/bookings/' || $2::uuid::text,
-        $5 || '-' || extract(epoch from now())::bigint)`, [booking.customer_id, bookingId,
-        action === "approve_reschedule" ? "New booking time approved" : "Reschedule request declined",
-        action === "approve_reschedule" ? `${booking.service_title} has been moved to your requested time.` : `${booking.service_title}: ${reason}`,
-        action]);
     } else if (action === "completed") {
       if (booking.status === "completed") {
         await client.query("COMMIT");
@@ -257,6 +198,8 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
         payment_release_status = CASE WHEN payout_frozen_at IS NULL THEN 'awaiting_customer' ELSE 'frozen' END,
         completion_confirmation_due_at = now() + interval '48 hours'
         WHERE id::text = $1`, [bookingId]);
+      await client.query(`UPDATE booking_reschedule_requests SET status='expired',response_reason='Original appointment completed',
+        responded_by=$2,responded_at=now() WHERE booking_id::text=$1 AND status='pending'`, [bookingId, session.user.id]);
       await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
         VALUES ($1::uuid, $2, 'completed', 'Provider marked the service complete.')`, [bookingId, session.user.id]);
       await client.query(
@@ -277,6 +220,8 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
           reschedule_reason = NULL, reschedule_requested_at = NULL WHERE id::text = $1`,
         [bookingId, reason],
       );
+      await client.query(`UPDATE booking_reschedule_requests SET status='withdrawn',response_reason='Booking cancelled',
+        responded_by=$2,responded_at=now() WHERE booking_id::text=$1 AND status='pending'`, [bookingId, session.user.id]);
       await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
         VALUES ($1::uuid, $2, 'cancelled', $3)`, [bookingId, session.user.id, `Provider ${action === "declined" ? "declined" : "cancelled"} the booking: ${reason}`]);
       await client.query(
@@ -354,7 +299,7 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
       const completedCount = await database.query<{ count: number }>("SELECT count(*)::int AS count FROM bookings WHERE provider_id::text = $1 AND status = 'completed'", [booking.provider_id]);
       if (completedCount.rows[0]?.count === 1) await recordAnalytics({ eventName: "first_booking_completed", userId: session.user.id, targetType: "booking", targetId: bookingId });
     }
-    if (!action.includes("reschedule") && action !== "assign" && action !== "send_quote") await sendBookingUpdateEmails(bookingId, action === "accepted" ? "accepted" : action === "completed" ? "completed" : action === "declined" ? "declined" : "cancelled");
+    if (action !== "assign" && action !== "send_quote") await sendBookingUpdateEmails(bookingId, action === "accepted" ? "accepted" : action === "completed" ? "completed" : action === "declined" ? "declined" : "cancelled");
     return NextResponse.json({ ok: true, refundWarning: automaticRefund && !automaticRefund.ok ? automaticRefund.error : undefined });
   } catch (error) {
     await client.query("ROLLBACK");

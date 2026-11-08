@@ -12,6 +12,7 @@ import { unavailableBookingProfessionals } from "@/lib/booking-staff";
 import { CUSTOMER_SERVICE_FEE_CENTS } from "@/lib/booking-fees";
 import { calculateBookingFinancialSnapshot, estimateProviderProcessingFeeCents, type BookingFinancialPlan } from "@/lib/booking-financials";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
+import { expireRescheduleRequests } from "@/lib/booking-rescheduling";
 
 export async function GET(_request: Request, context: RouteContext<"/api/bookings/[bookingId]">) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -79,6 +80,7 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
   );
   const row = result.rows[0];
   if (!row) return NextResponse.json({ error: "Booking not found." }, { status: 404 });
+  await expireRescheduleRequests(bookingId);
   const assignments = await database.query<{ member_id: string | null; name: string }>(
     `SELECT assigned.team_member_id::text AS member_id,
             CASE WHEN assigned.is_owner THEN $2 ELSE member.name END AS name
@@ -99,6 +101,14 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
             requested_service_subtotal_cents,reason,created_at FROM booking_change_requests
      WHERE booking_id::text=$1 AND status='pending' ORDER BY created_at DESC LIMIT 1`, [bookingId],
   );
+  const reschedules = await database.query<{
+    id: string; requested_by: string; requester_role: "customer" | "provider"; original_starts_at: Date; original_ends_at: Date;
+    proposed_starts_at: Date; proposed_ends_at: Date; reason: string; status: "pending" | "approved" | "declined" | "withdrawn" | "expired" | "time_unavailable";
+    response_reason: string; responded_by: string | null; responded_at: Date | null; expires_at: Date; created_at: Date;
+  }>(`SELECT id::text,requested_by,requester_role,original_starts_at,original_ends_at,proposed_starts_at,proposed_ends_at,
+      reason,status,response_reason,responded_by,responded_at,expires_at,created_at
+      FROM booking_reschedule_requests WHERE booking_id::text=$1 ORDER BY created_at DESC`, [bookingId]);
+  const pendingReschedule = reschedules.rows.find((request) => request.status === "pending") ?? null;
   const viewerRole = row.customer_id === session.user.id ? "customer" : row.provider_user_id === session.user.id ? "provider" : "worker";
   const financialSnapshotVisible = viewerRole === "provider" && (row.stripe_mode === null || row.stripe_mode === getStripeMode());
   const estimatedProcessing = estimateProviderProcessingFeeCents({
@@ -182,8 +192,16 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
       pricingType: row.quoted_pricing_type, hourlyRate: row.quoted_hourly_rate_cents === null ? null : row.quoted_hourly_rate_cents / 100,
       durationMinutes: row.quoted_duration_minutes },
     teamMembers: team,
-    reschedule: row.reschedule_starts_at ? { requestedBy: row.reschedule_requested_by, startsAt: row.reschedule_starts_at,
-      endsAt: row.reschedule_ends_at, reason: row.reschedule_reason, requestedAt: row.reschedule_requested_at } : null,
+    reschedule: pendingReschedule ? { id: pendingReschedule.id, requestedByViewer: pendingReschedule.requested_by === session.user.id,
+      requesterRole: pendingReschedule.requester_role, originalStartsAt: pendingReschedule.original_starts_at,
+      originalEndsAt: pendingReschedule.original_ends_at, startsAt: pendingReschedule.proposed_starts_at,
+      endsAt: pendingReschedule.proposed_ends_at, reason: pendingReschedule.reason,
+      requestedAt: pendingReschedule.created_at, expiresAt: pendingReschedule.expires_at } : null,
+    rescheduleHistory: reschedules.rows.map((request) => ({ id: request.id, requesterRole: request.requester_role,
+      requestedByViewer: request.requested_by === session.user.id, originalStartsAt: request.original_starts_at,
+      originalEndsAt: request.original_ends_at, proposedStartsAt: request.proposed_starts_at,
+      proposedEndsAt: request.proposed_ends_at, reason: request.reason, status: request.status,
+      responseReason: request.response_reason, respondedAt: request.responded_at, expiresAt: request.expires_at, createdAt: request.created_at })),
     history: history.rows.map((event) => ({ id: event.id, type: event.event_type, message: event.message, createdAt: event.created_at })),
     pendingDurationChange: pendingChange.rows[0] ? { id: pendingChange.rows[0].id,
       requestedByViewer: pendingChange.rows[0].requested_by === session.user.id,
@@ -203,12 +221,12 @@ export async function PATCH(request: Request, context: RouteContext<"/api/bookin
   if (!await enforceRateLimit({ request, userId: session.user.id, bucket: "customer-booking-update", limit: 12 }))
     return NextResponse.json({ error: "Too many booking changes. Please wait a minute and try again." }, { status: 429 });
   const { bookingId } = await context.params;
-  const body = (await request.json()) as { action?: unknown; reason?: unknown; startsAt?: unknown };
+  const body = (await request.json()) as { action?: unknown; reason?: unknown };
   const action = body.action;
   const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-  if (!["cancel", "request_reschedule", "accept_quote", "decline_quote"].includes(String(action))) return NextResponse.json({ error: "Choose a valid booking action." }, { status: 400 });
-  if ((action === "cancel" || action === "request_reschedule") && (reason.length < 3 || reason.length > 500)) return NextResponse.json({ error: "Add a brief reason." }, { status: 400 });
-  if (reason) { const safety = await checkAndRecordContent({ userId: session.user.id, surface: action === "cancel" ? "booking_cancellation" : "booking_reschedule", fields: [reason] }); if (!safety.allowed) return NextResponse.json({ error: safety.message }, { status: 422 }); }
+  if (!["cancel", "accept_quote", "decline_quote"].includes(String(action))) return NextResponse.json({ error: "Choose a valid booking action." }, { status: 400 });
+  if (action === "cancel" && (reason.length < 3 || reason.length > 500)) return NextResponse.json({ error: "Add a brief reason." }, { status: 400 });
+  if (reason) { const safety = await checkAndRecordContent({ userId: session.user.id, surface: "booking_cancellation", fields: [reason] }); if (!safety.allowed) return NextResponse.json({ error: safety.message }, { status: 422 }); }
 
   const client = await database.connect();
   try {
@@ -272,29 +290,14 @@ export async function PATCH(request: Request, context: RouteContext<"/api/bookin
         late_cancellation = $3,
         reschedule_requested_by = NULL, reschedule_starts_at = NULL, reschedule_ends_at = NULL, reschedule_reason = NULL,
         reschedule_requested_at = NULL WHERE id::text = $1`, [bookingId, reason, lateCancellation]);
+      await client.query(`UPDATE booking_reschedule_requests SET status='withdrawn',response_reason='Booking cancelled',
+        responded_by=$2,responded_at=now() WHERE booking_id::text=$1 AND status='pending'`, [bookingId, session.user.id]);
       await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
         VALUES ($1::uuid, $2, 'cancelled', $3)`, [bookingId, session.user.id, `${lateCancellation ? "Late cancellation" : "Customer cancelled the booking"}: ${reason}`]);
       await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
         VALUES ($1, $2::uuid, 'booking_cancelled', 'Booking cancelled', $3, '/provider/dashboard/bookings/' || $2::uuid::text,
         'booking-cancelled-' || $2::uuid::text || '-provider') ON CONFLICT (dedupe_key) DO NOTHING`,
         [booking.provider_user_id, bookingId, `${session.user.name || "The customer"} cancelled ${booking.service_title}: ${reason}`]);
-    } else {
-      const start = typeof body.startsAt === "string" ? new Date(body.startsAt) : new Date(Number.NaN);
-      if (Number.isNaN(start.getTime()) || start <= new Date()) { await client.query("ROLLBACK"); return NextResponse.json({ error: "Choose a future date and time." }, { status: 400 }); }
-      const end = new Date(start.getTime() + booking.duration_minutes * 60_000);
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [booking.provider_id]);
-      const unavailable = await unavailableBookingProfessionals(client, { bookingId, providerId: booking.provider_id,
-        serviceId: booking.service_id, startsAt: start, endsAt: end });
-      if (unavailable.length) { await client.query("ROLLBACK"); return NextResponse.json({ error: `${unavailable.join(", ")} ${unavailable.length === 1 ? "is" : "are"} outside working hours or already booked.` }, { status: 409 }); }
-      await client.query(`UPDATE bookings SET reschedule_requested_by = 'customer', reschedule_starts_at = $2,
-        reschedule_ends_at = $3, reschedule_reason = $4, reschedule_requested_at = now() WHERE id::text = $1`, [bookingId, start, end, reason]);
-      await client.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message, metadata)
-        VALUES ($1::uuid, $2, 'reschedule_requested', $3, jsonb_build_object('startsAt', $4::timestamptz))`,
-        [bookingId, session.user.id, `Customer requested a new time: ${reason}`, start]);
-      await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-        VALUES ($1, $2::uuid, 'booking_reschedule', 'New reschedule request', $3, '/provider/dashboard/bookings/' || $2::uuid::text,
-        'booking-reschedule-' || $2::uuid::text || '-' || extract(epoch from now())::bigint)`,
-        [booking.provider_user_id, bookingId, `${session.user.name || "The customer"} requested a new time for ${booking.service_title}.`]);
     }
     await client.query("COMMIT");
     const automaticRefund = shouldAutoRefund ? await refundUnreleasedBooking(bookingId, "Customer cancelled within the provider notice window before payout release.") : null;

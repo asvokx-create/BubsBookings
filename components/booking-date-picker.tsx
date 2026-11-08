@@ -13,6 +13,7 @@ type BookingDatePickerProps = {
   disabled?: boolean;
   durationMinutes?: number;
   additionalMinutes?: number;
+  availabilityBaseUrl?: string;
 };
 
 const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -37,7 +38,7 @@ function CalendarDay({ date, disabled, selected, today, onKeyDown, onSelect }: C
   );
 }
 
-export default function BookingDatePicker({ serviceId, value, onChange, disabled = false, durationMinutes, additionalMinutes = 0 }: BookingDatePickerProps) {
+export default function BookingDatePicker({ serviceId, value, onChange, disabled = false, durationMinutes, additionalMinutes = 0, availabilityBaseUrl }: BookingDatePickerProps) {
   const today = todayDateOnly();
   const currentMonth = monthForDate(today);
   const [open, setOpen] = useState(false);
@@ -96,7 +97,8 @@ export default function BookingDatePicker({ serviceId, value, onChange, disabled
   useEffect(() => {
     if (!open) return;
     const controller = new AbortController();
-    fetch(`/api/services/${serviceId}/availability?month=${encodeURIComponent(monthKey)}${durationMinutes ? `&durationMinutes=${durationMinutes}` : ""}${additionalMinutes ? `&additionalMinutes=${additionalMinutes}` : ""}`, { signal: controller.signal })
+    const baseUrl = availabilityBaseUrl ?? `/api/services/${serviceId}/availability`;
+    fetch(`${baseUrl}?month=${encodeURIComponent(monthKey)}${durationMinutes ? `&durationMinutes=${durationMinutes}` : ""}${additionalMinutes ? `&additionalMinutes=${additionalMinutes}` : ""}`, { signal: controller.signal })
       .then(async (response) => {
         let data: { dates?: string[]; error?: string } = {};
         try {
@@ -112,7 +114,7 @@ export default function BookingDatePicker({ serviceId, value, onChange, disabled
         setAvailability({ requestKey, dates: noDates, error: "We couldn't load availability. Please try again." });
       })
     return () => controller.abort();
-  }, [additionalMinutes, durationMinutes, monthKey, open, requestKey, serviceId]);
+  }, [additionalMinutes, availabilityBaseUrl, durationMinutes, monthKey, open, requestKey, serviceId]);
 
   useLayoutEffect(() => {
     if (!open) return;

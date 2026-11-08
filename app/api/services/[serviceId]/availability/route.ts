@@ -82,6 +82,15 @@ export async function GET(request: Request, context: RouteContext<"/api/services
              AND b.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
              AND b.ends_at > gs.starts_at
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM provider_calendly_connections connection
+           JOIN provider_calendly_events external_event ON external_event.connection_id=connection.id
+           WHERE gs.member_id IS NULL AND connection.provider_id=gs.provider_id
+             AND connection.disconnected_at IS NULL AND connection.block_conflicting_bookings=true
+             AND external_event.status='active'
+             AND external_event.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
+             AND external_event.ends_at > gs.starts_at
+         )
        ORDER BY date`,
       [serviceId, `${month}-01`, selectedDurationMinutes],
     );
@@ -139,6 +148,15 @@ export async function GET(request: Request, context: RouteContext<"/api/services
            AND ((gs.member_id IS NULL AND assigned.is_owner = true) OR assigned.team_member_id = gs.member_id)
            AND b.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
            AND b.ends_at > gs.starts_at
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM provider_calendly_connections connection
+         JOIN provider_calendly_events external_event ON external_event.connection_id=connection.id
+         WHERE gs.member_id IS NULL AND connection.provider_id=gs.provider_id
+           AND connection.disconnected_at IS NULL AND connection.block_conflicting_bookings=true
+           AND external_event.status='active'
+           AND external_event.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
+           AND external_event.ends_at > gs.starts_at
        )
      ORDER BY time`,
     [serviceId, date, selectedDurationMinutes],
