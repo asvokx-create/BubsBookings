@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { database } from "@/lib/database";
 import { validateHourlyDuration, type HourlyPricingConfig, type PricingType } from "@/lib/service-pricing";
+import { zonedDateTimeToUtc } from "@/lib/zoned-date-time";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const monthPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -91,6 +92,14 @@ export async function GET(request: Request, context: RouteContext<"/api/services
              AND external_event.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
              AND external_event.ends_at > gs.starts_at
          )
+         AND NOT EXISTS (
+           SELECT 1 FROM provider_calendly_connections connection
+           WHERE gs.member_id IS NULL AND connection.provider_id=gs.provider_id
+             AND connection.disconnected_at IS NULL AND connection.block_conflicting_bookings=true
+             AND (connection.last_sync_succeeded_at IS NULL
+               OR connection.last_sync_succeeded_at<now()-interval '20 minutes'
+               OR connection.last_sync_error IS NOT NULL)
+         )
        ORDER BY date`,
       [serviceId, `${month}-01`, selectedDurationMinutes],
     );
@@ -100,7 +109,7 @@ export async function GET(request: Request, context: RouteContext<"/api/services
   const date = searchParams.get("date") ?? "";
   if (!datePattern.test(date)) return NextResponse.json({ error: "Choose a valid date." }, { status: 400 });
 
-  const result = await database.query<{ time: string }>(
+  const result = await database.query<{ time: string; timezone: string }>(
     `WITH service_info AS (
        SELECT s.id, s.provider_id, $3::integer AS duration_minutes, s.location_id
        FROM services s
@@ -130,7 +139,7 @@ export async function GET(request: Request, context: RouteContext<"/api/services
        ) AS generated(starts_at)
        WHERE sh.weekday = EXTRACT(DOW FROM $2::date)
      )
-     SELECT DISTINCT to_char(gs.starts_at AT TIME ZONE gs.timezone, 'HH24:MI') AS time
+     SELECT DISTINCT to_char(gs.starts_at AT TIME ZONE gs.timezone, 'HH24:MI') AS time, gs.timezone
      FROM generated_slots gs
      WHERE gs.starts_at > CURRENT_TIMESTAMP
        AND NOT EXISTS (
@@ -158,9 +167,20 @@ export async function GET(request: Request, context: RouteContext<"/api/services
            AND external_event.starts_at < gs.starts_at + make_interval(mins => gs.duration_minutes)
            AND external_event.ends_at > gs.starts_at
        )
-     ORDER BY time`,
+       AND NOT EXISTS (
+         SELECT 1 FROM provider_calendly_connections connection
+         WHERE gs.member_id IS NULL AND connection.provider_id=gs.provider_id
+           AND connection.disconnected_at IS NULL AND connection.block_conflicting_bookings=true
+           AND (connection.last_sync_succeeded_at IS NULL
+             OR connection.last_sync_succeeded_at<now()-interval '20 minutes'
+             OR connection.last_sync_error IS NOT NULL)
+       )
+     ORDER BY time, gs.timezone`,
     [serviceId, date, selectedDurationMinutes],
   );
 
-  return NextResponse.json({ times: result.rows.map((row) => row.time.slice(0, 5)) });
+  const safeRows = result.rows.filter((row) => zonedDateTimeToUtc(date, row.time.slice(0, 5), row.timezone) !== null);
+  return NextResponse.json({ times: [...new Set(safeRows.map((row) => row.time.slice(0, 5)))],
+    timeZone: safeRows[0]?.timezone ?? result.rows[0]?.timezone ?? "America/Los_Angeles",
+  });
 }

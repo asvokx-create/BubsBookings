@@ -59,6 +59,13 @@ export async function unavailableBookingProfessionals(client: PoolClient, input:
        WHERE connection.provider_id::text = $2 AND connection.disconnected_at IS NULL
          AND connection.block_conflicting_bookings = true AND external_event.status = 'active'
          AND external_event.starts_at < $5 AND external_event.ends_at > $4
+     )) OR (assigned.is_owner = true AND EXISTS (
+       SELECT 1 FROM provider_calendly_connections connection
+       WHERE connection.provider_id::text = $2 AND connection.disconnected_at IS NULL
+         AND connection.block_conflicting_bookings = true
+         AND (connection.last_sync_succeeded_at IS NULL
+           OR connection.last_sync_succeeded_at < now()-interval '20 minutes'
+           OR connection.last_sync_error IS NOT NULL)
      ))`,
     [input.bookingId, input.providerId, input.serviceId, input.startsAt, input.endsAt],
   );

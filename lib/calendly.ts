@@ -7,6 +7,7 @@ import { CALENDLY_API_ORIGIN, CALENDLY_OAUTH_SCOPES, calendlyApiUrl, calendlySch
 import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
 
 const AUTH_ORIGIN = "https://auth.calendly.com";
+const CALENDLY_REQUEST_TIMEOUT_MS = 15_000;
 
 type TokenResponse = {
   access_token: string;
@@ -90,6 +91,7 @@ async function tokenRequest(parameters: Record<string, string>) {
     headers: { Authorization: basicAuthorization(), "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ client_id: calendlyConfiguration().clientId, ...parameters }),
     cache: "no-store",
+    signal: AbortSignal.timeout(CALENDLY_REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) {
     let reason = "";
@@ -109,10 +111,12 @@ async function tokenRequest(parameters: Record<string, string>) {
 
 async function apiRequest<T>(token: string, pathOrUrl: string, init?: RequestInit) {
   const url = calendlyApiUrl(pathOrUrl);
+  const timeoutSignal = AbortSignal.timeout(CALENDLY_REQUEST_TIMEOUT_MS);
   const response = await fetch(url, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...init?.headers },
     cache: "no-store",
+    signal: init?.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal,
   });
   if (!response.ok) {
     let reason = "";
@@ -290,6 +294,36 @@ export async function syncCalendlyConnection(connectionId: string) {
   }
 }
 
+export async function syncDueCalendlyConnections() {
+  const due = await database.query<{ id: string }>(
+    `SELECT id::text
+     FROM provider_calendly_connections
+     WHERE disconnected_at IS NULL AND block_conflicting_bookings=true
+       AND (last_sync_succeeded_at IS NULL
+         OR last_sync_succeeded_at < now()-interval '10 minutes'
+         OR last_sync_error IS NOT NULL)
+     ORDER BY COALESCE(last_sync_succeeded_at, to_timestamp(0)) ASC
+     LIMIT 12`,
+  );
+  let synchronized = 0;
+  let failed = 0;
+  let cursor = 0;
+  async function synchronizeNext() {
+    while (cursor < due.rows.length) {
+      const connection = due.rows[cursor];
+      cursor += 1;
+      try {
+        await syncCalendlyConnection(connection.id);
+        synchronized += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(3, due.rows.length) }, () => synchronizeNext()));
+  return { checked: due.rows.length, synchronized, failed };
+}
+
 export async function configureCalendlyWebhook(connectionId: string) {
   const config = calendlyConfiguration();
   if (!config.webhookSigningKey) {
@@ -309,9 +343,9 @@ export async function configureCalendlyWebhook(connectionId: string) {
   } catch (error) {
     const status = (error as Error & { status?: number }).status;
     const message = status === 403
-      ? "Automatic updates require a Calendly Standard, Teams, or Enterprise plan plus approved webhook permissions. Manual sync remains available."
+      ? "Calendly rejected webhook access. Webhooks are supported on all current Calendly plans; reconnect the account to approve current permissions. Manual sync remains available."
       : "Calendly automatic updates could not be enabled. Manual sync remains available.";
-    await database.query("UPDATE provider_calendly_connections SET webhook_subscription_uri=NULL,webhook_status=$2,webhook_error=$3,updated_at=now() WHERE id::text=$1", [connectionId, status === 403 ? "unsupported" : "failed", message]);
+    await database.query("UPDATE provider_calendly_connections SET webhook_subscription_uri=NULL,webhook_status='failed',webhook_error=$2,updated_at=now() WHERE id::text=$1", [connectionId, message]);
   }
 }
 
@@ -385,7 +419,7 @@ export async function disconnectCalendly(connectionId: string) {
     const { token } = await connectionToken(connectionId);
     await removeCalendlyWebhook(connectionId);
     const config = calendlyConfiguration();
-    await fetch(`${AUTH_ORIGIN}/oauth/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, token }) });
+    await fetch(`${AUTH_ORIGIN}/oauth/revoke`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ client_id: config.clientId, client_secret: config.clientSecret, token }), signal: AbortSignal.timeout(CALENDLY_REQUEST_TIMEOUT_MS) });
   } catch {
     // Always complete the local disconnect even if Calendly credentials were already revoked.
   }

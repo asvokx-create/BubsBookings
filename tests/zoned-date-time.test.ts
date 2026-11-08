@@ -15,6 +15,11 @@ test("rejects an invalid time zone and a skipped daylight-saving time", () => {
   assert.equal(zonedDateTimeToUtc("2026-03-08", "02:30", "America/Los_Angeles"), null);
 });
 
+test("rejects a repeated daylight-saving wall-clock time instead of choosing an offset", () => {
+  assert.equal(zonedDateTimeToUtc("2026-11-01", "01:30", "America/Los_Angeles"), null);
+  assert.equal(zonedDateTimeToUtc("2026-11-01", "02:30", "America/Los_Angeles")?.toISOString(), "2026-11-01T10:30:00.000Z");
+});
+
 test("coupon expiration lasts through the provider's full local calendar day",()=>{
   assert.equal(nextCalendarDate("2026-10-04"),"2026-10-05");
   assert.equal(endOfZonedCalendarDate("2026-10-04","America/Los_Angeles")?.toISOString(),"2026-10-05T07:00:00.000Z");

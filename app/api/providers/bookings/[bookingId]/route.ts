@@ -163,7 +163,13 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
             JOIN provider_calendly_events external_event ON external_event.connection_id=connection.id
             WHERE connection.provider_id::text=$1 AND connection.disconnected_at IS NULL
               AND connection.block_conflicting_bookings=true AND external_event.status='active'
-              AND external_event.starts_at<$4 AND external_event.ends_at>$3)) LIMIT 1`,
+              AND external_event.starts_at<$4 AND external_event.ends_at>$3))
+          OR ($2::uuid IS NULL AND EXISTS (SELECT 1 FROM provider_calendly_connections connection
+            WHERE connection.provider_id::text=$1 AND connection.disconnected_at IS NULL
+              AND connection.block_conflicting_bookings=true
+              AND (connection.last_sync_succeeded_at IS NULL
+                OR connection.last_sync_succeeded_at<now()-interval '20 minutes'
+                OR connection.last_sync_error IS NOT NULL))) LIMIT 1`,
           [booking.provider_id, memberId, booking.starts_at, booking.ends_at]);
         if (!working.rowCount || conflict.rowCount || blocked.rowCount) { await client.query("ROLLBACK"); return NextResponse.json({ error: `${assigneeName} is unavailable at this time.` }, { status: 409 }); }
         selected.push({ memberId, name: assigneeName });

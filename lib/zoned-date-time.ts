@@ -59,11 +59,21 @@ export function zonedDateTimeToUtc(date: string, time: string, timeZone: string)
     result = new Date(result.getTime() + (wallClockUtc - displayedAsUtc));
   }
 
-  const verified = zonedParts(result, timeZone);
-  return verified.year === target.year && verified.month === target.month && verified.day === target.day
-    && verified.hour === target.hour && verified.minute === target.minute
-    ? result
-    : null;
+  const matchesTarget = (candidate: Date) => {
+    const parts = zonedParts(candidate, timeZone);
+    return parts.year === target.year && parts.month === target.month && parts.day === target.day
+      && parts.hour === target.hour && parts.minute === target.minute;
+  };
+  if (!matchesTarget(result)) return null;
+
+  // A repeated wall-clock time during the fall DST transition maps to two UTC
+  // instants. Reject it instead of silently choosing one offset.
+  for (let offsetMinutes = -180; offsetMinutes <= 180; offsetMinutes += 1) {
+    if (offsetMinutes === 0) continue;
+    const candidate = new Date(result.getTime() + offsetMinutes * 60_000);
+    if (matchesTarget(candidate)) return null;
+  }
+  return result;
 }
 
 export function nextCalendarDate(date: string) {

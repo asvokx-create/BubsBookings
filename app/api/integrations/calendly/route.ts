@@ -10,9 +10,12 @@ export async function GET() {
   const result = await database.query<{
     id: string; account_name: string; account_email: string; account_timezone: string; scheduling_url: string | null;
     webhook_status: string; webhook_error: string | null; block_conflicting_bookings: boolean; last_sync_started_at: Date | null;
-    last_sync_succeeded_at: Date | null; last_sync_error: string | null; connected_at: Date;
+    last_sync_succeeded_at: Date | null; last_sync_error: string | null; connected_at: Date; conflict_protection_status: "disabled" | "current" | "stale";
   }>(`SELECT id::text,account_name,account_email,account_timezone,scheduling_url,webhook_status,webhook_error,block_conflicting_bookings,
-      last_sync_started_at,last_sync_succeeded_at,last_sync_error,connected_at
+      last_sync_started_at,last_sync_succeeded_at,last_sync_error,connected_at,
+      CASE WHEN block_conflicting_bookings=false THEN 'disabled'
+        WHEN last_sync_succeeded_at IS NOT NULL AND last_sync_succeeded_at>=now()-interval '20 minutes' AND last_sync_error IS NULL THEN 'current'
+        ELSE 'stale' END AS conflict_protection_status
       FROM provider_calendly_connections WHERE provider_id::text=$1 AND disconnected_at IS NULL`, [access.providerId]);
   const connection = result.rows[0];
   return NextResponse.json({
@@ -22,6 +25,7 @@ export async function GET() {
       accountTimezone: connection.account_timezone, schedulingUrl: connection.scheduling_url,
       webhookStatus: connection.webhook_status, webhookError: connection.webhook_error,
       blockConflictingBookings: connection.block_conflicting_bookings,
+      conflictProtectionStatus: connection.conflict_protection_status,
       lastSyncStartedAt: connection.last_sync_started_at, lastSyncSucceededAt: connection.last_sync_succeeded_at,
       lastSyncError: connection.last_sync_error, connectedAt: connection.connected_at,
     } : null,

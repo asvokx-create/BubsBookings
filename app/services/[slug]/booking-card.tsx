@@ -72,6 +72,7 @@ export default function BookingCard({ serviceId, price, duration, pricingType, h
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [timeSlots, setTimeSlots] = useState<string[]>([]);
+  const [providerTimeZone, setProviderTimeZone] = useState("");
   const [step, setStep] = useState<"details" | "times" | "confirmed">("details");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -146,13 +147,14 @@ export default function BookingCard({ serviceId, price, duration, pricingType, h
       setError("We could not check availability. Please try again.");
       return;
     }
-    const data = await responseJson<{ times?: string[]; error?: string }>(response);
+    const data = await responseJson<{ times?: string[]; timeZone?: string; error?: string }>(response);
     setLoading(false);
     if (!response.ok || !data) {
       setError(data?.error ?? "We could not check availability. Please try again.");
       return;
     }
     setTimeSlots(data.times ?? []);
+    setProviderTimeZone(data.timeZone ?? "");
     setStep("times");
   }
 
@@ -251,7 +253,7 @@ export default function BookingCard({ serviceId, price, duration, pricingType, h
 
         {step === "times" && (
           <fieldset className="pt-2">
-            <legend className="mb-3 text-xs font-bold uppercase tracking-wider text-[#708078]">Available times</legend>
+            <legend className="mb-3 text-xs font-bold uppercase tracking-wider text-[#708078]">Available times{providerTimeZone ? ` · ${providerTimeZone}` : ""}</legend>
             <div className="grid grid-cols-2 gap-2">
               {timeSlots.map((slot) => (
                 <button key={slot} type="button" onClick={() => { setTime(slot); setError(""); }} className={`rounded-xl border px-3 py-3 text-sm font-semibold transition ${time === slot ? "border-[#183126] bg-[#183126] text-white" : "border-[#183126]/15 bg-white hover:border-[#8f8421] hover:bg-[#fff7ad]"}`}>{formatTime(slot)}</button>

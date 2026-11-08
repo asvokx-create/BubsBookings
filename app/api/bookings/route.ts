@@ -14,6 +14,7 @@ import { readMarketingToken } from "@/lib/provider-marketing";
 import { calculateHourlyBasePriceCents, formatDurationMinutes, validateHourlyDuration, type HourlyPricingConfig, type PricingType } from "@/lib/service-pricing";
 import { AGE_CONFIRMATION_REQUIRED_MESSAGE, hasConfirmedAge } from "@/lib/account-age";
 import { getStripeMode } from "@/lib/stripe";
+import { zonedDateTimeToUtc } from "@/lib/zoned-date-time";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -179,12 +180,9 @@ export async function POST(request: Request) {
 
   if (Number(time.slice(3, 5)) % 30 !== 0) return NextResponse.json({ error: "Choose a listed 30-minute time." }, { status: 409 });
 
-  const timeResult = await database.query<{ starts_at: Date; ends_at: Date }>(
-    `SELECT (($1::date + $2::time) AT TIME ZONE $3) AS starts_at,
-            (($1::date + $2::time) AT TIME ZONE $3) + make_interval(mins => $4) AS ends_at`,
-    [date, time, service.timezone, selectedDurationMinutes],
-  );
-  const { starts_at: startsAt, ends_at: endsAt } = timeResult.rows[0];
+  const startsAt = zonedDateTimeToUtc(date, time, service.timezone);
+  if (!startsAt) return NextResponse.json({ error: "That local time is skipped or repeated by daylight saving time. Choose another listed time." }, { status: 409 });
+  const endsAt = new Date(startsAt.getTime() + selectedDurationMinutes * 60_000);
   if (startsAt <= new Date()) return NextResponse.json({ error: "Choose a future time." }, { status: 409 });
 
   const client = await database.connect();
@@ -232,6 +230,12 @@ export async function POST(request: Request) {
            WHERE staff.member_id IS NULL AND connection.provider_id::text = $1 AND connection.disconnected_at IS NULL
              AND connection.block_conflicting_bookings = true AND external_event.status = 'active'
              AND external_event.starts_at < $3 AND external_event.ends_at > $2)
+         AND NOT EXISTS (SELECT 1 FROM provider_calendly_connections connection
+           WHERE staff.member_id IS NULL AND connection.provider_id::text = $1 AND connection.disconnected_at IS NULL
+             AND connection.block_conflicting_bookings = true
+             AND (connection.last_sync_succeeded_at IS NULL
+               OR connection.last_sync_succeeded_at < now()-interval '20 minutes'
+               OR connection.last_sync_error IS NOT NULL))
          AND NOT EXISTS (SELECT 1 FROM bookings own_request WHERE own_request.customer_id = $4 AND own_request.provider_id::text = $1
            AND own_request.status = 'requested' AND own_request.starts_at < $3 AND own_request.ends_at > $2)
        ORDER BY staff.priority, staff.name LIMIT 1`,

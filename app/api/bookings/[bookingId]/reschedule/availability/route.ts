@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { database } from "@/lib/database";
+import { zonedDateTimeToUtc } from "@/lib/zoned-date-time";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const monthPattern = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -69,6 +70,14 @@ const availabilityCtes = `
           AND connection.block_conflicting_bookings=true AND external_event.status='active'
           AND external_event.starts_at<candidate.ends_at AND external_event.ends_at>candidate.starts_at
       ))
+      OR (professional.is_owner=true AND EXISTS (
+        SELECT 1 FROM provider_calendly_connections connection
+        WHERE connection.provider_id=info.provider_id AND connection.disconnected_at IS NULL
+          AND connection.block_conflicting_bookings=true
+          AND (connection.last_sync_succeeded_at IS NULL
+            OR connection.last_sync_succeeded_at<now()-interval '20 minutes'
+            OR connection.last_sync_error IS NOT NULL)
+      ))
     )
   )`;
 
@@ -104,7 +113,7 @@ export async function GET(request: Request, context: { params: Promise<{ booking
       WHERE booking.id::text=$1 AND booking.status='confirmed' AND (booking.customer_id=$2 OR provider.user_id=$2)`, [bookingId, session.user.id]);
     if (!access.rowCount) return NextResponse.json({ error: "This booking is not eligible for rescheduling." }, { status: 404 });
   }
-  return NextResponse.json(month
-    ? { dates: result.rows.map((row) => row.value), timeZone: result.rows[0]?.timezone ?? "America/Los_Angeles" }
-    : { times: result.rows.map((row) => row.value), timeZone: result.rows[0]?.timezone ?? "America/Los_Angeles" });
+  if (month) return NextResponse.json({ dates: result.rows.map((row) => row.value), timeZone: result.rows[0]?.timezone ?? "America/Los_Angeles" });
+  const safeRows = result.rows.filter((row) => zonedDateTimeToUtc(date, row.value, row.timezone) !== null);
+  return NextResponse.json({ times: safeRows.map((row) => row.value), timeZone: safeRows[0]?.timezone ?? result.rows[0]?.timezone ?? "America/Los_Angeles" });
 }

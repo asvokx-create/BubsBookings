@@ -84,10 +84,10 @@ test("co-hosted and group events resolve safely", () => {
   assert.equal(calendlyScheduledEventStatus("invitee.canceled", undefined), "canceled");
 });
 
-test("Calendly supports manual sync and clearly reports webhook plan limitations", () => {
+test("Calendly supports webhooks on current plans and retains a manual sync fallback", () => {
   assert.match(panel, /Sync now/);
-  assert.match(panel, /Calendly Standard, Teams, or Enterprise/);
-  assert.match(integration, /status === 403 \? "unsupported"/);
+  assert.match(integration, /Webhooks are supported on all current Calendly plans/);
+  assert.match(integration, /webhook_status='failed'/);
   assert.match(integration, /invitee\.created/);
   assert.match(integration, /invitee\.canceled/);
 });
