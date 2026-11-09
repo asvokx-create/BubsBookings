@@ -1,4 +1,5 @@
 import { recordBookingChargeRefund } from "@/lib/booking-refund-reconciliation";
+import { recordBookingPayoutTransfer } from "@/lib/booking-payout-reconciliation";
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { database } from "@/lib/database";
@@ -298,15 +299,10 @@ async function recordTransferCreated(transfer: Stripe.Transfer) {
     return;
   }
   const bookingId = transfer.metadata?.bookingId;
-  if (!bookingId) return;
-  await database.query(`UPDATE bookings SET stripe_transfer_id = COALESCE(stripe_transfer_id, $2),
-      payment_release_status = CASE WHEN payment_release_status = 'processing' THEN 'paid_out' ELSE payment_release_status END,
-      payout_released_at = CASE WHEN payment_release_status = 'processing' THEN COALESCE(payout_released_at, now()) ELSE payout_released_at END
-    FROM provider_profiles provider
-    WHERE bookings.id::text = $1 AND bookings.provider_id=provider.id AND bookings.stripe_mode = $3
-      AND bookings.provider_payout_cents=$4 AND provider.stripe_account_id=$5 AND provider.stripe_connect_mode=$3`,
-    [bookingId, transfer.id, getStripeMode(), transfer.amount,
-      typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? ""]);
+  if (!bookingId || transfer.metadata.kind !== "provider_payout") return;
+  await recordBookingPayoutTransfer({ bookingId, transferId: transfer.id, mode: getStripeMode(), amountCents: transfer.amount,
+    connectedAccountId: typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? "",
+    sourceChargeId: idOf(transfer.source_transaction) });
 }
 
 async function recordTransferReversed(transfer: Stripe.Transfer) {
@@ -323,14 +319,20 @@ async function recordTransferReversed(transfer: Stripe.Transfer) {
     return;
   }
   const bookingId = transfer.metadata?.bookingId;
-  if (!bookingId) return;
+  if (!bookingId || transfer.metadata.kind !== "provider_payout") return;
   if (!Number.isSafeInteger(transfer.amount) || transfer.amount <= 0
     || !Number.isSafeInteger(transfer.amount_reversed) || transfer.amount_reversed < 0
     || transfer.amount_reversed > transfer.amount) return;
   const fullyReversed = transfer.amount_reversed >= transfer.amount;
+  // Reversal can precede transfer.created or follow a lost payout response.
+  // Record matching identity first so the reversal cannot be silently skipped.
   const client = await database.connect();
   try {
     await client.query("BEGIN");
+    const identified = await recordBookingPayoutTransfer({ bookingId, transferId: transfer.id, mode: getStripeMode(), amountCents: transfer.amount,
+      connectedAccountId: typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? "",
+      sourceChargeId: idOf(transfer.source_transaction) }, client);
+    if (!identified.rowCount) { await client.query("ROLLBACK"); return; }
     // Keep the original transfer principal separate from cumulative recovery.
     // The guarded UPDATE holds a row lock until its audit entry commits, so
     // duplicate events cannot double-record and older snapshots cannot regress.

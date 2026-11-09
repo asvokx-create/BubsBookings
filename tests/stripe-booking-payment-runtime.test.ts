@@ -60,6 +60,8 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
   const chargeOverrides = new Map<string, any>();
   const disputedCharges = new Set<string>();
   let transferCalls = 0;
+  let duringTransfer: () => Promise<void> = async () => {};
+  let afterQuery: (sql: string) => Promise<void> = async () => {};
   let pendingFee = false;
   const stripe = {
     webhooks: signatureTools,
@@ -69,7 +71,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.ok(result, "only configured synthetic dispute lists may be read");
       return result;
     } },
-    transfers: { create: async () => { transferCalls++; return { id: "tr_test_new" }; } },
+    transfers: { create: async () => { transferCalls++; await duringTransfer(); return { id: "tr_test_new" }; } },
     paymentIntents: { retrieve: async (id: string) => {
       assert.ok(intents.has(id), "only a known synthetic payment intent may be retrieved");
       return intents.get(id);
@@ -87,6 +89,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       return executor.query("SELECT 1 / 0 AS simulated_database_failure");
     }
     const result = await executor.query(sql, values);
+    await afterQuery(sql);
     return { ...result, rowCount: result.rowCount ?? (result.affectedRows || result.rows.length) };
   };
   const database = {
@@ -94,7 +97,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     connect: async () => {
       if (!postgres) return { query, release() {} };
       const client = await db.connect();
-      return { query: (sql: string, values: unknown[] = []) => query(sql, values, client), release: () => client.release() };
+      return { query: (sql: string, values: unknown[] = []) => query(sql, values, client), release: (discard = false) => client.release(discard) };
     },
   };
   const replacements: Record<string, unknown> = {
@@ -310,7 +313,8 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const reverse = async (f: Awaited<ReturnType<typeof fixture>>, amountReversed: number, suffix: string, options: { transferId?: string; livemode?: boolean } = {}) => {
       const payload = JSON.stringify({ id: f.eventId + suffix, object: "event", type: "transfer.reversed", livemode: options.livemode ?? false,
         created: Math.floor(Date.now() / 1000), data: { object: { id: options.transferId ?? "tr_test_" + f.bookingId,
-          object: "transfer", amount: 5197, amount_reversed: amountReversed, metadata: { bookingId: f.bookingId } } } });
+          object: "transfer", amount: 5197, amount_reversed: amountReversed, destination: "acct_test", source_transaction: "ch_test_" + f.bookingId,
+          metadata: { bookingId: f.bookingId, kind: "provider_payout" } } } });
       return POST(new Request("http://localhost/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": signatureTools.generateTestHeaderString({ payload, secret: webhookSecret }) }, body: payload }));
     };
     const reversalEvents = async (id: string) => (await db.query("SELECT * FROM booking_events WHERE booking_id=$1 AND event_type='transfer_reversed'", [id])).rows;
@@ -537,6 +541,82 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       const results = await Promise.all([disputeEvent(f, "needs_response", "parallel_a"), disputeEvent(f, "needs_response", "parallel_b")]);
       assert.deepEqual(results.map(r => r.status), [200, 200]);
       assert.equal((await disputeAudits(f.bookingId)).length, 1);
+    });
+
+    const payoutWarning = "Provider payout outcome requires reconciliation. Contact support before retrying.";
+    const unknownPayoutFixture = async () => {
+      const f = await fixture(false); await send(f);
+      await db.query("UPDATE bookings SET payment_release_status='processing',payout_failure_reason=$2 WHERE id=$1", [f.bookingId, payoutWarning]); return f;
+    };
+    const transferCreated = async (f: Awaited<ReturnType<typeof fixture>>, patch: Record<string, unknown> = {}, livemode = false) => {
+      const payload = JSON.stringify({ id: "evt_test_transfer_" + randomUUID(), object: "event", type: "transfer.created", livemode,
+        data: { object: { id: "tr_test_" + f.bookingId, object: "transfer", amount: 5197, destination: "acct_test",
+          source_transaction: "ch_test_" + f.bookingId, metadata: { bookingId: f.bookingId, kind: "provider_payout" }, ...patch } } });
+      return POST(new Request("http://localhost/api/stripe/webhook", { method: "POST", headers: {
+        "stripe-signature": signatureTools.generateTestHeaderString({ payload, secret: webhookSecret }),
+      }, body: payload }));
+    };
+    await t.test("signed delayed transfer confirms only matching kind, mode, amount, destination and source", async () => {
+      for (const patch of [{ amount: 5196 }, { destination: "acct_unrelated" }, { source_transaction: "ch_test_unrelated" },
+        { metadata: { kind: "unrelated" } }, { source_transaction: null }]) {
+        const f = await unknownPayoutFixture(); assert.equal((await transferCreated(f, patch)).status, 200);
+        assert.equal((await booking(f.bookingId)).stripe_transfer_id, null); assert.equal((await booking(f.bookingId)).payout_failure_reason, payoutWarning);
+      }
+      const f = await unknownPayoutFixture(); assert.equal((await transferCreated(f, {}, true)).status, 400);
+      assert.equal((await transferCreated(f)).status, 200); let row = await booking(f.bookingId);
+      assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId); assert.equal(row.payment_release_status, "paid_out"); assert.equal(row.payout_failure_reason, null);
+      assert.equal((await transferCreated(f, { id: "tr_test_unrelated" })).status, 200); row = await booking(f.bookingId);
+      assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId);
+    });
+    for (const status of ["needs_response", "lost"]) await t.test(`late signed transfer after ${status} chargeback retains recovery state`, async () => {
+      const f = await unknownPayoutFixture(); assert.equal((await disputeEvent(f, status)).status, 200);
+      assert.equal((await transferCreated(f)).status, 200); const row = await booking(f.bookingId);
+      assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 0);
+      assert.equal(row.payment_release_status, "frozen"); assert.ok(row.payout_frozen_at); assert.match(row.payout_failure_reason, /recovery/);
+    });
+    await t.test("late signed transfer after full refund preserves principal and requires recovery", async () => {
+      const f = await unknownPayoutFixture();
+      await recordBookingChargeRefund({ bookingId: f.bookingId, paymentIntentId: f.checkout.payment_intent, mode: "test", fullyRefunded: true, amountRefunded: 6299, chargeAmount: 6299 });
+      assert.equal((await booking(f.bookingId)).provider_payout_cents, 5197);
+      assert.equal((await transferCreated(f)).status, 200); const row = await booking(f.bookingId);
+      assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId); assert.equal(row.payment_release_status, "frozen"); assert.match(row.payout_failure_reason, /recovery/);
+    });
+    await t.test("signed reversal before transfer-created commits identity and recovery together", async () => {
+      const f = await unknownPayoutFixture(); failures.push("'transfer_reversed'");
+      assert.equal((await reverse(f, 5197, "_unknown_retry")).status, 500);
+      let row = await booking(f.bookingId); assert.equal(row.stripe_transfer_id, null); assert.equal(row.stripe_transfer_reversed_cents, 0); assert.equal(row.payout_failure_reason, payoutWarning);
+      assert.equal((await reverse(f, 5197, "_unknown_retry")).status, 200); assert.equal((await transferCreated(f)).status, 200);
+      row = await booking(f.bookingId); assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId);
+      assert.equal(row.stripe_transfer_reversed_cents, 5197); assert.equal(row.payment_release_status, "reversed"); assert.equal(row.payout_failure_reason, null);
+    });
+    await t.test("PostgreSQL never exposes matched transfer identity without its signed reversal", { skip: !postgres }, async () => {
+      const f = await unknownPayoutFixture();
+      let entered!: () => void, finish!: () => void;
+      const identified = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { finish = resolve; });
+      afterQuery = async (sql) => { if (sql.startsWith("UPDATE bookings SET stripe_transfer_id = COALESCE")) { afterQuery = async () => {}; entered(); await gate; } };
+      const reversing = reverse(f, 5197, "_atomic"); await identified;
+      try {
+        const row = await booking(f.bookingId); assert.equal(row.stripe_transfer_id, null); assert.equal(row.stripe_transfer_reversed_cents, 0); assert.equal(row.payout_failure_reason, payoutWarning);
+        const claim = await db.query(`UPDATE bookings SET refund_status='processing' WHERE id=$1
+          AND payment_release_status <> 'processing' AND payout_failure_reason IS DISTINCT FROM $2 RETURNING id`, [f.bookingId, payoutWarning]);
+        assert.equal(claim.rowCount, 0);
+      } finally { finish(); afterQuery = async () => {}; }
+      assert.equal((await reversing).status, 200); assert.equal((await booking(f.bookingId)).stripe_transfer_reversed_cents, 5197);
+    });
+    await t.test("PostgreSQL dispute creation waits across the payout claim commit and Stripe send", { skip: !postgres }, async () => {
+      const f = await fixture(false); await send(f);
+      let entered!: () => void, finish!: () => void;
+      const sending = new Promise<void>(resolve => { entered = resolve; }); const gate = new Promise<void>(resolve => { finish = resolve; });
+      duringTransfer = async () => { entered(); await gate; };
+      const releasing = releaseBookingPayout(f.bookingId, "customer"); await sending;
+      let disputeFinished = false;
+      const disputing = disputeEvent(f).then((response: Response) => { disputeFinished = true; return response; });
+      try {
+        await new Promise(resolve => setTimeout(resolve, 40)); assert.equal(disputeFinished, false);
+        const row = await booking(f.bookingId); assert.equal(row.payment_release_status, "processing"); assert.equal(row.payout_failure_reason, payoutWarning);
+      } finally { finish(); duringTransfer = async () => {}; }
+      assert.equal((await releasing).ok, true); assert.equal((await disputing).status, 200);
+      const row = await booking(f.bookingId); assert.equal(row.stripe_transfer_id, "tr_test_new"); assert.match(row.payout_failure_reason, /recovery/);
     });
 
     await t.test("all webhook booking-event JSON queries execute with typed parameters", async () => {

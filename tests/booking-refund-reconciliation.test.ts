@@ -22,6 +22,8 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
       if(name==="./booking-processing-fees")return {reconcileBookingProcessingFee:async()=>({status:"final"})};
       if(name==="./affiliates")return {syncAffiliateCommissionForBooking:async()=>{}};
       if(name==="./booking-financials")return load("lib/booking-financials.ts");
+      if(name==="./booking-refund-operations")return load("lib/booking-refund-operations.ts");
+      if(name==="./booking-payout-reconciliation")return load("lib/booking-payout-reconciliation.ts");
       throw new Error(`Unexpected import ${name}`);
     },mod,mod.exports);return mod.exports;
   };

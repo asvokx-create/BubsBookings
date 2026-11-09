@@ -9,6 +9,8 @@ import { PLAN_ENTITLEMENTS, type ProviderPlan } from "@/lib/plans";
 import { hasAdminAccess } from "@/lib/admin";
 import { recordAnalytics } from "@/lib/analytics";
 import { syncAffiliateCommissionForBooking } from "@/lib/affiliates";
+import { BOOKING_REFUND_RECONCILIATION, recordPendingBookingRefund } from "@/lib/booking-refund-operations";
+import { BOOKING_PAYOUT_RECONCILIATION } from "@/lib/booking-payout-reconciliation";
 
 type RefundAction = "request" | "approve" | "reject";
 
@@ -62,8 +64,9 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
       payout_freeze_reason = CASE WHEN payment_flow = 'held_transfer_v1' AND stripe_transfer_id IS NULL AND payout_frozen_at IS NULL AND payout_freeze_reason IS NULL THEN 'Refund requested' ELSE payout_freeze_reason END,
       payment_release_status = CASE WHEN payment_flow = 'held_transfer_v1' AND stripe_transfer_id IS NULL THEN 'frozen' ELSE payment_release_status END
       WHERE id::text = $1 AND payment_status = 'paid' AND stripe_mode = $4
+        AND payment_release_status <> 'processing' AND payout_failure_reason IS DISTINCT FROM $5
         AND refund_status NOT IN ('requested', 'processing', 'refunded')
-      RETURNING id`, [bookingId, session.user.id, reason, getStripeMode()]);
+      RETURNING id`, [bookingId, session.user.id, reason, getStripeMode(), BOOKING_PAYOUT_RECONCILIATION]);
     if (!requested.rowCount) return NextResponse.json({ error: "A refund is already underway or this payment is no longer refundable." }, { status: 409 });
     await database.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message)
       VALUES ($1::uuid, $2, 'refund_requested', $3)`, [bookingId, session.user.id, `Customer requested a refund: ${reason}`]);
@@ -100,11 +103,17 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
   const amountCents = Number.isFinite(requestedDollars) ? Math.round(requestedDollars * 100) : booking.price_cents;
   const remainingRefundable = booking.price_cents - booking.refunded_amount_cents;
   if (amountCents < 1 || amountCents > remainingRefundable) return NextResponse.json({ error: `Choose an amount from $0.01 to $${(remainingRefundable / 100).toFixed(2)}.` }, { status: 400 });
-  const claimed = await database.query(`UPDATE bookings SET refund_status = 'processing', refund_amount_cents = $2, refund_failure_reason = NULL
+  if (booking.stripe_transfer_id && amountCents < remainingRefundable
+    && (booking.refunded_amount_cents > 0 || booking.stripe_transfer_reversed_cents > 0)) {
+    return NextResponse.json({ error: "This transferred payment has earlier refund or recovery activity. Reconcile its remaining provider share before issuing another partial refund.", reconciliationRequired: true }, { status: 409 });
+  }
+  const claimed = await database.query(`UPDATE bookings SET refund_status = 'processing', refund_amount_cents = $2, refund_failure_reason = $7
     WHERE id::text = $1 AND refund_status = 'requested'
+      AND payment_release_status <> 'processing' AND payout_failure_reason IS DISTINCT FROM $8
       AND refunded_amount_cents = $3 AND customer_service_fee_refunded_cents = $4
       AND provider_payout_cents = $5 AND stripe_transfer_id IS NOT DISTINCT FROM $6::text
-    RETURNING id`, [bookingId, amountCents, booking.refunded_amount_cents, booking.customer_service_fee_refunded_cents, booking.provider_payout_cents, booking.stripe_transfer_id]);
+      AND stripe_transfer_reversed_cents = $9
+    RETURNING id`, [bookingId, amountCents, booking.refunded_amount_cents, booking.customer_service_fee_refunded_cents, booking.provider_payout_cents, booking.stripe_transfer_id, BOOKING_REFUND_RECONCILIATION, BOOKING_PAYOUT_RECONCILIATION, booking.stripe_transfer_reversed_cents]);
   if (!claimed.rowCount) return NextResponse.json({ error: "This refund is already being processed." }, { status: 409 });
 
   let stripeRefundCreated = false;
@@ -128,9 +137,7 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
     // Accepted/pending refunds are not proof of settlement. Keep the claim so
     // another request cannot issue a second refund while Stripe reconciles it.
     if (refund.status !== "succeeded") {
-      await database.query(`UPDATE bookings SET stripe_refund_id = $2,
-        refund_failure_reason = 'Stripe refund requires reconciliation. Contact support before retrying.'
-        WHERE id::text = $1 AND refund_status = 'processing'`, [bookingId, refund.id]);
+      await recordPendingBookingRefund(bookingId, BOOKING_REFUND_RECONCILIATION, refund.id);
       return NextResponse.json({ error: "Stripe has not confirmed this refund as completed. Contact support before retrying.", reconciliationRequired: true }, { status: 202 });
     }
     let reversalFailure = "";
@@ -157,9 +164,10 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
       }
     }
     const adjustedHeldPayout = !legacyDestinationCharge && !booking.stripe_transfer_id
-      ? Math.max(0, Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / booking.price_cents))
+      ? Math.max(0, Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / remainingRefundable))
       : booking.provider_payout_cents;
     const settled = await database.query<{ payout_failure_reason: string | null }>(`UPDATE bookings SET refund_status = 'refunded', stripe_refund_id = $2,
+      refund_failure_reason = NULL,
       refunded_amount_cents = GREATEST(refunded_amount_cents, $3),
       customer_service_fee_refunded_cents = GREATEST(customer_service_fee_refunded_cents, $8),
       refunded_at = now(), payment_status = CASE WHEN $4 THEN 'refunded' ELSE payment_status END,
@@ -197,14 +205,9 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
     const approvalRequired = typeof error === "object" && error !== null && "code" in error && error.code === "approval_required";
     // A transport error may hide a successful Stripe operation. A later local
     // failure must never downgrade webhook-confirmed settlement or allow a retry.
-    try {
-      await database.query(`UPDATE bookings SET refund_failure_reason = $2
-        WHERE id::text = $1 AND refund_status = 'processing'`, [bookingId,
-        approvalRequired ? "Stripe approval is pending. Do not retry the refund while approval is under review."
-          : "Refund outcome requires reconciliation. Contact support before retrying."]);
-    } catch (recordError) {
-      console.error("Could not record refund reconciliation warning", recordError);
-    }
+    await recordPendingBookingRefund(bookingId, approvalRequired
+      ? "Stripe approval is pending. Do not retry the refund while approval is under review."
+      : BOOKING_REFUND_RECONCILIATION);
     return NextResponse.json({ error: approvalRequired
       ? "Stripe approval is pending. Do not retry the refund while approval is under review."
       : stripeRefundCreated

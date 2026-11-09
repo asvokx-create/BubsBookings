@@ -68,6 +68,8 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
   };
   const load = (name: string): any => {
     if (name in replacements) return replacements[name];
+    if (name === "./booking-payout-reconciliation") return load("@/lib/booking-payout-reconciliation");
+    if (name === "./booking-refund-operations") return load("@/lib/booking-refund-operations");
     if (!name.startsWith("@/")) return nativeRequire(name);
     const output = ts.transpileModule(readFileSync(resolve(name.slice(2) + ".ts"), "utf8"), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -248,6 +250,29 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       reversalError = new Error("Lost response after confirmed recovery");
       const response = await send(id); assert.equal(response.status, 200); assert.equal((await response.json()).reversalNeedsReview, false);
       const row = await booking(id); assert.equal(row.payment_release_status, "reversed"); assert.equal(row.stripe_transfer_reversed_cents, 5197); assert.equal(row.payout_failure_reason, null);
+    });
+    await t.test("a second held partial refund reduces only the remaining provider share", async () => {
+      const id = await fixture();
+      await db.query("UPDATE bookings SET price_cents=1000,customer_total_cents=1299,refunded_amount_cents=200,provider_payout_cents=720 WHERE id=$1", [id]);
+      assert.equal((await send(id, 1)).status, 200); const row = await booking(id);
+      assert.equal(row.refunded_amount_cents, 300); assert.equal(row.provider_payout_cents, 630); assert.equal(calls[0].params.amount, 100);
+    });
+    for (const reversed of [0, 180]) await t.test(`transferred partial with prior refund/reversal ${reversed} fails before Stripe, but full remaining refund is safe`, async () => {
+      const id = await fixture();
+      await db.query("UPDATE bookings SET price_cents=1000,customer_total_cents=1299,refunded_amount_cents=200,provider_payout_cents=720,stripe_transfer_id='tr_test_existing',stripe_transfer_reversed_cents=$2,payment_release_status='paid_out' WHERE id=$1", [id, reversed]);
+      assert.equal((await send(id, 1)).status, 409); assert.equal(calls.length, 0); assert.equal(reversalCalls.length, 0);
+      assert.equal((await send(id, 8)).status, 200); const row = await booking(id);
+      assert.equal(calls[0].params.amount, 1099); assert.equal(reversalCalls[0].params.amount, 720 - reversed);
+      assert.equal(row.provider_payout_cents, 720); assert.equal(row.stripe_transfer_reversed_cents, 720); assert.equal(row.payment_release_status, "reversed");
+    });
+    await t.test("new transfer recovery after the manual refund read invalidates its claim", async () => {
+      const id = await fixture(); await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing' WHERE id=$1", [id]);
+      beforeQuery = async (sql) => {
+        if (sql.includes("UPDATE bookings SET refund_status = 'processing'")) {
+          beforeQuery = async () => {}; await db.query("UPDATE bookings SET stripe_transfer_reversed_cents=100 WHERE id=$1", [id]);
+        }
+      };
+      assert.equal((await send(id, 30)).status, 409); assert.equal(calls.length, 0); assert.equal(reversalCalls.length, 0);
     });
   } finally { await cleanup(); }
 });
