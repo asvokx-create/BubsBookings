@@ -45,3 +45,31 @@ An unresolved Stripe request older than the safe idempotency window is held for 
 Account exports include project records, time entries, and history while preserving preacceptance address redaction. Self-service account deletion is blocked before any external Stripe deletion if hourly-project records exist; support must reconcile shared work/payment evidence and handle deletion safely. A full automated retention/anonymization workflow is not part of this release.
 
 Owner approved the described billing rules and corresponding Terms and Provider Agreement update on November 9, 2026. Applicable consent versions and the terms source hash are updated in this branch; previously recorded agreement data is unchanged.
+
+## Sandbox QA evidence addendum (November 9, 2026)
+
+These results cover an isolated local app, disposable synthetic accounts, and the verified Stripe sandbox. No live payment or production deployment was performed.
+
+### Verified
+
+- CI for commit `2f79ee0` completed with 649 passing tests and zero skipped tests. The subsequent refund-hardening change passed 661 local tests with four real-PostgreSQL opt-ins skipped; its exact-commit PostgreSQL CI remains required. Independent review found no remaining blocker in that patch.
+- A one-minute project at $60/hour produced a single $3.99 Checkout: $1.00 labor plus the $2.99 customer service fee.
+- Concurrent and repeated Checkout requests reused one session and one settlement. Checkout cancellation did not record payment; resuming the same session allowed payment. After payment, a new Checkout request returned 409 without creating another attempt.
+- Hosted Checkout disabled payment submission while processing. Reloading or revisiting the completed session did not offer another payment.
+- A second session rejected the documented insufficient-funds test card without recording a successful payment. Recovery with the successful test card in that same session produced one successful payment event and one Checkout attempt.
+- Signed payment webhooks recorded the successful sandbox payments. Customer and provider receipt APIs returned the matching project and payment details. Authenticated API checks used synthetic accounts only.
+- The supported customer completion action reconciled the first payment's actual processing fee from pending to final: 42 cents total Stripe processing cost, 11 cents allocated to the provider, 10 cents platform fee, and a 79-cent provider transfer. Repeating completion retained the same transfer and exactly one payout event.
+- Public desktop (1536-pixel) and mobile (390-pixel) layouts passed the public-copy and horizontal-overflow checks. New hourly cards describe tracked projects rather than a legacy minimum purchase; the listing explains corrections, final approval, and payment.
+
+### Pending refund reconciliation
+
+Both synthetic refund requests received Stripe `approval_required` responses. These are pending external human review, not evidence of missing key permissions or definitively failed refunds. Stripe states that approval can execute the requested action automatically. Neither refund was retried.
+
+The current local records still show failed refund status from the pre-hardening code and must not be treated as authoritative proof that no refund can occur. Reconcile the original requests and subsequent Stripe events before any further refund attempt. The first payment already transferred 79 cents; recovery of that transfer requires review after refund approval. The second payment has no provider transfer and is locally frozen following the refund request. Do not manually alter financial facts to make either test pass.
+
+### Remaining release gates
+
+- Validate the refund-hardening change independently, including pending external approval, uncertain outcomes, signed refund events, and transfer recovery. Reconcile both outstanding sandbox requests before declaring refund coverage complete.
+- Authenticated customer/provider visual workflows have not yet been exercised. API sessions do not substitute for visual checks of timers, refresh, corrections, approval, and mobile layouts.
+- Async payment and dispute cases have not been exercised in this actual sandbox session. The full prelaunch checklist above still applies, including cases covered only by automated tests.
+- This addendum is QA evidence, not release approval. Deployment remains gated on the outstanding checks, passing validation of the final commit, and the explicit rollout process above.

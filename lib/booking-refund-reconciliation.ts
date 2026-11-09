@@ -10,7 +10,10 @@ export async function recordBookingChargeRefund(input: { paymentIntentId: string
     payout_frozen_at = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL
       AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents THEN COALESCE(payout_frozen_at,now()) ELSE payout_frozen_at END,
     payout_freeze_reason = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL
-      AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents THEN 'Stripe refund requires payout reconciliation' ELSE payout_freeze_reason END,
+      AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents
+      AND ((payout_frozen_at IS NULL AND payout_freeze_reason IS NULL)
+        OR payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation'))
+      THEN 'Stripe refund requires payout reconciliation' ELSE payout_freeze_reason END,
     payment_release_status = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL AND $3 THEN 'reversed'
       WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents THEN 'frozen'
       ELSE payment_release_status END,

@@ -292,9 +292,13 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
     }
     setWorking(true); setError(""); setNotice("");
     const response = await fetch(`/api/bookings/${bookingId}/refund`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, reason, amount }) }).catch(() => null);
-    const result = response ? await response.json() as { error?: string; amount?: number } : null;
-    if (!response?.ok) setError(result?.error ?? "We could not update this refund.");
-    else { setNotice(action === "request" ? "Refund request sent to the provider." : action === "approve" ? `A $${result?.amount?.toFixed(2)} refund was sent to the original payment method.` : "Refund request declined."); await loadBooking(); }
+    const result = response ? await response.json().catch(() => null) as { error?: string; amount?: number; reconciliationRequired?: boolean; reversalNeedsReview?: boolean } | null : null;
+    if (result?.reconciliationRequired) setError(result.error ?? "This refund needs reconciliation. Contact support before retrying.");
+    else if (!response?.ok) setError(result?.error ?? "The refund outcome could not be confirmed. Contact support before retrying.");
+    else { setNotice(action === "request" ? "Refund request sent to the provider." : action === "approve" ? `A $${result?.amount?.toFixed(2)} refund was sent to the original payment method.${result?.reversalNeedsReview ? " Provider transfer recovery is not confirmed. Contact support before retrying recovery." : ""}` : "Refund request declined."); }
+    // Even a lost/error response may follow a successful Stripe action. Refresh
+    // the claim before enabling controls, including accepted-but-pending refunds.
+    await loadBooking();
     setWorking(false);
   }
 
@@ -473,7 +477,8 @@ function Detail({ icon, label, value, note }: { icon: string; label: string; val
 }
 
 function paymentReleaseCopy(booking: Booking, timeZone?: string) {
-  if (booking.paymentStatus === "refunded") return { label: "Payment refunded", detail: "The payment was returned to the original payment method." };
+  if (booking.paymentStatus === "refunded") return { label: "Payment refunded", detail: `The payment was returned to the original payment method.${booking.paymentRelease.failureReason ? ` ${booking.paymentRelease.failureReason}` : ""}` };
+  if (booking.paymentRelease.failureReason) return { label: "Payout needs attention", detail: booking.paymentRelease.failureReason };
   if (booking.paymentStatus !== "paid") return { label: "Payment not completed", detail: booking.quote.status === "accepted" ? "Customer approved this price. Payment through Stripe is required before the provider can mark the job complete." : "Payment is due after booking confirmation and before completion." };
   switch (booking.paymentRelease.status) {
     case "secured": return { label: "Payment secured · Awaiting completion", detail: "Stripe has collected the payment. The provider share stays held until the service is completed." };
