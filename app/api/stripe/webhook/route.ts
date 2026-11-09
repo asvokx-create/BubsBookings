@@ -196,7 +196,8 @@ async function markBookingPaid(checkout: Stripe.Checkout.Session) {
     const updated = await client.query(`UPDATE bookings SET payment_status = 'paid', stripe_payment_intent_id = $2,
       stripe_charge_id = $5, stripe_mode = $4, paid_at = now(),
       payment_release_status = CASE
-        WHEN $6 AND payout_frozen_at IS NOT NULL THEN 'frozen'
+        WHEN payment_release_status = 'reversed' THEN 'reversed'
+        WHEN payout_frozen_at IS NOT NULL THEN 'frozen'
         WHEN $6 AND status = 'completed' THEN 'awaiting_customer'
         WHEN $6 THEN 'secured'
         ELSE 'paid_out' END,
@@ -427,6 +428,23 @@ async function recordTipDispute(dispute: Stripe.Dispute, closed = false) {
   }
 }
 
+// A dispute can arrive before Checkout has persisted the charge. Do not infer
+// ownership from dispute metadata or mutate a booking by a guessed identifier.
+// Recognized app payments must stay retryable until their exact charge is linked.
+async function retryUnlinkedBookingDispute(dispute: Stripe.Dispute, chargeId: string) {
+  const charge = await getStripe().charges.retrieve(chargeId);
+  const paymentIntentId = idOf(charge.payment_intent);
+  if (!paymentIntentId) return;
+  const intent = await getStripe().paymentIntents.retrieve(paymentIntentId);
+  if (intent.metadata.kind !== "booking_payment" || !intent.metadata.bookingId) return;
+  if (charge.id !== chargeId || idOf(dispute.payment_intent) !== paymentIntentId
+    || idOf(intent.latest_charge) !== chargeId
+    || charge.livemode !== (getStripeMode() === "live") || intent.livemode !== charge.livemode) {
+    throw new Error("Stripe dispute payment linkage requires reconciliation.");
+  }
+  throw new Error("Stripe booking dispute is waiting for payment charge linkage.");
+}
+
 async function recordStripeDisputeOpened(dispute: Stripe.Dispute) {
   const chargeId = idOf(dispute.charge);
   if (!chargeId) return;
@@ -439,22 +457,36 @@ async function recordStripeDisputeOpened(dispute: Stripe.Dispute) {
     );
     const bookingId = bookingIdResult.rows[0]?.id;
     if (!bookingId) {
+      await retryUnlinkedBookingDispute(dispute, chargeId);
       await client.query("COMMIT");
       return;
     }
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`booking-payout:${bookingId}`]);
     const bookingResult = await client.query<{
       id: string; customer_id: string; provider_user_id: string; service_title: string;
-      stripe_transfer_id: string | null; payment_release_status: string;
+      stripe_transfer_id: string | null; payment_release_status: string; stripe_dispute_id: string | null; stripe_dispute_closed_at: Date | null;
     }>(`SELECT b.id::text, b.customer_id, p.user_id AS provider_user_id, s.title AS service_title,
-        b.stripe_transfer_id, b.payment_release_status
+        b.stripe_transfer_id, b.payment_release_status, b.stripe_dispute_id, b.stripe_dispute_closed_at
       FROM bookings b
       JOIN provider_profiles p ON p.id = b.provider_id
       JOIN services s ON s.id = b.service_id
       WHERE b.id::text = $1
       FOR UPDATE OF b`, [bookingId]);
     const booking = bookingResult.rows[0];
+    const terminalHistory = await client.query(`SELECT 1 FROM booking_events
+      WHERE booking_id=$1::uuid AND event_type='stripe_dispute_closed'
+        AND metadata->>'stripeDisputeId'=$2 LIMIT 1`, [bookingId, dispute.id]);
+    if (terminalHistory.rowCount) {
+      await client.query("COMMIT");
+      return;
+    }
     if (!booking) {
+      await client.query("COMMIT");
+      return;
+    }
+    // Distinct event IDs may describe the same dispute; terminal state wins
+    // even when the created event is delivered after closed.
+    if (booking.stripe_dispute_id === dispute.id) {
       await client.query("COMMIT");
       return;
     }
@@ -466,13 +498,14 @@ async function recordStripeDisputeOpened(dispute: Stripe.Dispute) {
         stripe_dispute_opened_at = COALESCE(stripe_dispute_opened_at, now()),
         stripe_dispute_closed_at = NULL,
         payout_frozen_at = CASE
-          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('secured', 'awaiting_customer', 'processing', 'failed') THEN now()
+          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('awaiting_payment', 'secured', 'awaiting_customer', 'processing', 'failed') THEN COALESCE(payout_frozen_at, now())
           ELSE payout_frozen_at END,
         payout_freeze_reason = CASE
-          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('secured', 'awaiting_customer', 'processing', 'failed') THEN 'Stripe chargeback under review'
+          WHEN payout_frozen_at IS NOT NULL THEN payout_freeze_reason
+          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('awaiting_payment', 'secured', 'awaiting_customer', 'processing', 'failed') THEN 'Stripe chargeback under review'
           ELSE payout_freeze_reason END,
         payment_release_status = CASE
-          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('secured', 'awaiting_customer', 'processing', 'failed') THEN 'frozen'
+          WHEN stripe_transfer_id IS NULL AND payment_release_status IN ('awaiting_payment', 'secured', 'awaiting_customer', 'processing', 'failed') THEN 'frozen'
           ELSE payment_release_status END,
         payout_failure_reason = CASE
           WHEN stripe_transfer_id IS NOT NULL THEN 'A Stripe chargeback was opened after the provider payout. An administrator must review transfer recovery.'
@@ -517,22 +550,34 @@ async function recordStripeDisputeClosed(dispute: Stripe.Dispute) {
     );
     const bookingId = bookingIdResult.rows[0]?.id;
     if (!bookingId) {
+      await retryUnlinkedBookingDispute(dispute, chargeId);
       await client.query("COMMIT");
       return;
     }
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`booking-payout:${bookingId}`]);
     const bookingResult = await client.query<{
       id: string; customer_id: string; provider_user_id: string; service_title: string;
-      stripe_transfer_id: string | null;
+      stripe_transfer_id: string | null; stripe_dispute_id: string | null; stripe_dispute_closed_at: Date | null;
     }>(`SELECT b.id::text, b.customer_id, p.user_id AS provider_user_id, s.title AS service_title,
-        b.stripe_transfer_id
+        b.stripe_transfer_id, b.stripe_dispute_id, b.stripe_dispute_closed_at
       FROM bookings b
       JOIN provider_profiles p ON p.id = b.provider_id
       JOIN services s ON s.id = b.service_id
       WHERE b.id::text = $1
       FOR UPDATE OF b`, [bookingId]);
     const booking = bookingResult.rows[0];
+    const terminalHistory = await client.query(`SELECT 1 FROM booking_events
+      WHERE booking_id=$1::uuid AND event_type='stripe_dispute_closed'
+        AND metadata->>'stripeDisputeId'=$2 LIMIT 1`, [bookingId, dispute.id]);
+    if (terminalHistory.rowCount) {
+      await client.query("COMMIT");
+      return;
+    }
     if (!booking) {
+      await client.query("COMMIT");
+      return;
+    }
+    if (booking.stripe_dispute_id === dispute.id && booking.stripe_dispute_closed_at) {
       await client.query("COMMIT");
       return;
     }

@@ -9,7 +9,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
   const db=new PGlite();
   let transfers=0;
   let refundDuringFeeFetch=false;
-  const charge={currency:"usd",amount:10299,amount_refunded:0,refunded:false,balance_transaction:{fee:300}};
+  const charge={id:"ch_test",livemode:false,payment_intent:"pi_test",currency:"usd",amount:10299,amount_refunded:0,refunded:false,balance_transaction:{fee:300}};
   const query=async(sql:string,values:unknown[]=[])=>{if(sql.includes("pg_advisory_xact_lock"))return {rows:[],rowCount:1};const result=await db.query(sql,values);return {...result,rowCount:result.affectedRows||result.rows.length};};
   const database={query,connect:async()=>({query,release(){}})};
   const load=(file:string):any=>{
@@ -30,6 +30,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
       CREATE TABLE provider_profiles(id uuid,user_id text,age_verification_status text,stripe_connect_mode text,stripe_payouts_enabled boolean,stripe_account_id text);
       CREATE TABLE services(id uuid,business_name text,title text);
       CREATE TABLE bookings(id uuid,customer_id text,provider_id uuid,service_id uuid,payment_status text,stripe_mode text,payment_release_status text,payout_failure_reason text,payout_frozen_at timestamptz,payout_freeze_reason text,status text,refund_status text,stripe_transfer_id text,stripe_charge_id text,stripe_payment_intent_id text,provider_payout_cents integer,payment_flow text,price_cents integer,customer_service_fee_cents integer,customer_total_cents integer,refunded_amount_cents integer,customer_service_fee_refunded_cents integer,refunded_at timestamptz,payout_released_at timestamptz);
+      ALTER TABLE bookings ADD stripe_dispute_id text, ADD stripe_dispute_status text, ADD stripe_dispute_closed_at timestamptz;
       ALTER TABLE bookings ADD platform_fee_cents integer DEFAULT 1000,ADD stripe_processing_fee_cents integer,ADD provider_processing_fee_cents integer DEFAULT 0,ADD processing_fee_status text DEFAULT 'pending',ADD refund_failure_reason text,ADD stripe_transfer_reversed_cents integer DEFAULT 0;
       CREATE TABLE booking_disputes(booking_id uuid,status text);
       CREATE TABLE booking_events(booking_id uuid,event_type text,message text,metadata jsonb);

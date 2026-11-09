@@ -36,7 +36,8 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`booking-payout:${bookingId}`]);
     const claimed = await client.query<{
       id: string; customer_id: string; provider_user_id: string; provider_name: string; service_title: string;
-      provider_payout_cents: number; stripe_account_id: string | null; stripe_charge_id: string | null;
+      provider_payout_cents: number; stripe_account_id: string | null; stripe_charge_id: string | null; stripe_payment_intent_id: string | null;
+      stripe_dispute_id: string | null; stripe_dispute_status: string | null; stripe_dispute_closed_at: Date | null;
       stripe_mode: "test" | "live" | null; refunded_amount_cents: number; customer_service_fee_refunded_cents: number; customer_total_cents: number;
     }>(`UPDATE bookings b SET payment_release_status = 'processing', payout_failure_reason = NULL
         FROM provider_profiles p, services s
@@ -53,7 +54,8 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
           )
         RETURNING b.id::text, b.customer_id, p.user_id AS provider_user_id,
           s.business_name AS provider_name, s.title AS service_title,
-          b.provider_payout_cents, p.stripe_account_id, b.stripe_charge_id, b.stripe_mode,
+          b.provider_payout_cents, p.stripe_account_id, b.stripe_charge_id, b.stripe_mode, b.stripe_payment_intent_id,
+          b.stripe_dispute_id, b.stripe_dispute_status, b.stripe_dispute_closed_at,
           b.refunded_amount_cents,b.customer_service_fee_refunded_cents,b.customer_total_cents`,
       [bookingId, getStripeMode()]);
     const booking = claimed.rows[0];
@@ -75,6 +77,41 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
     // Stripe dashboard refunds can precede their webhook. Check while holding
     // the payout row lock, and never transfer unreconciled customer funds.
     const charge = await getStripe().charges.retrieve(booking.stripe_charge_id);
+    const stripeId = (value: string | { id: string } | null) => typeof value === "string" ? value : value?.id ?? null;
+    const chargeMatches = charge.id === booking.stripe_charge_id
+      && charge.livemode === (booking.stripe_mode === "live")
+      && Boolean(booking.stripe_payment_intent_id) && stripeId(charge.payment_intent) === booking.stripe_payment_intent_id;
+    if (!chargeMatches) {
+      await client.query(`UPDATE bookings SET payment_release_status='frozen',payout_frozen_at=COALESCE(payout_frozen_at,now()),
+        payout_freeze_reason='Stripe charge identity requires reconciliation',payout_failure_reason='Review the linked Stripe charge before releasing this payout.' WHERE id::text=$1`, [bookingId]);
+      await client.query("COMMIT");
+      return { ok: false, error: "This payment needs Stripe charge reconciliation before payout." };
+    }
+    // Stripe retains disputed=true after a win. A stored favorable closure alone
+    // cannot rule out an escalated inquiry or newer case before its webhook.
+    // Disputes Read is required only on this historically disputed payout path.
+    let disputeClosedFavorably = Boolean(booking.stripe_dispute_id && booking.stripe_dispute_closed_at
+      && (booking.stripe_dispute_status === "won" || booking.stripe_dispute_status === "warning_closed"));
+    if (charge.disputed && disputeClosedFavorably) {
+      try {
+        const disputes = await getStripe().disputes.list({ charge: charge.id, limit: 100 });
+        disputeClosedFavorably = !disputes.has_more
+          && disputes.data.some(dispute => dispute.id === booking.stripe_dispute_id)
+          && disputes.data.every(dispute => stripeId(dispute.charge) === charge.id
+            && dispute.livemode === charge.livemode
+            && stripeId(dispute.payment_intent) === booking.stripe_payment_intent_id
+            && (dispute.status === "won" || dispute.status === "warning_closed"));
+      } catch {
+        // Includes missing read permission: never silently broaden key access.
+        disputeClosedFavorably = false;
+      }
+    }
+    if (charge.disputed && !disputeClosedFavorably) {
+      await client.query(`UPDATE bookings SET payment_release_status='frozen',payout_frozen_at=COALESCE(payout_frozen_at,now()),
+        payout_freeze_reason='Stripe chargeback under review',payout_failure_reason='Verify all current Stripe disputes are closed favorably. Disputes Read access is required for this check.' WHERE id::text=$1`, [bookingId]);
+      await client.query("COMMIT");
+      return { ok: false, error: "This payment needs Stripe dispute reconciliation before payout. Current disputes could not be verified as closed favorably." };
+    }
     if (charge.currency !== "usd" || charge.amount !== booking.customer_total_cents || charge.amount_refunded > booking.refunded_amount_cents + booking.customer_service_fee_refunded_cents || charge.refunded) {
       await client.query(`UPDATE bookings SET payment_release_status='frozen',payout_frozen_at=COALESCE(payout_frozen_at,now()),
         payout_freeze_reason='Stripe refund requires payout reconciliation',payout_failure_reason='Review the Stripe charge and reconcile the refund before releasing this payout.' WHERE id::text=$1`,[bookingId]);

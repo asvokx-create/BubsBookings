@@ -28,7 +28,22 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const admin = new pg.Pool({ connectionString, ssl: false });
     await admin.query(`CREATE SCHEMA "${schema}"`);
     const pool = new pg.Pool({ connectionString, ssl: false, options: `-c search_path=${schema}`, max: 8 });
-    db = { query: (sql: string, values: unknown[] = []) => pool.query(sql, values), exec: (sql: string) => pool.query(sql), connect: () => pool.connect() };
+    // Some local PostgreSQL-compatible servers ignore startup options.
+    // Set and verify the schema before issuing any fixture SQL on a connection.
+    const connect = async () => {
+      const client = await pool.connect();
+      try {
+        await client.query(`SET search_path TO "${schema}"`);
+        const selected = await client.query("SELECT current_schema() AS schema");
+        assert.equal(selected.rows[0].schema, schema, "all test SQL must use the disposable schema");
+        return client;
+      } catch (error) { client.release(); throw error; }
+    };
+    const isolatedQuery = async (sql: string, values: unknown[] = []) => {
+      const client = await connect();
+      try { return await client.query(sql, values); } finally { client.release(); }
+    };
+    db = { query: isolatedQuery, exec: isolatedQuery, connect };
     cleanup = async () => { await pool.end(); await admin.query(`DROP SCHEMA "${schema}" CASCADE`); await admin.end(); };
   } else {
     db = new PGlite();
@@ -41,9 +56,20 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
   t.beforeEach(() => { failures.length = 0; });
   const intents = new Map<string, any>();
   let chargeCalls = 0;
+  const disputeLists = new Map<string, any>();
+  const chargeOverrides = new Map<string, any>();
+  const disputedCharges = new Set<string>();
+  let transferCalls = 0;
   let pendingFee = false;
   const stripe = {
     webhooks: signatureTools,
+    disputes: { list: async ({ charge }: { charge: string }) => {
+      const result = disputeLists.get(charge);
+      if (result instanceof Error) throw result;
+      assert.ok(result, "only configured synthetic dispute lists may be read");
+      return result;
+    } },
+    transfers: { create: async () => { transferCalls++; return { id: "tr_test_new" }; } },
     paymentIntents: { retrieve: async (id: string) => {
       assert.ok(intents.has(id), "only a known synthetic payment intent may be retrieved");
       return intents.get(id);
@@ -51,7 +77,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     charges: { retrieve: async (id: string) => {
       assert.ok(id.startsWith("ch_test_"));
       chargeCalls++;
-      return { id, balance_transaction: pendingFee ? null : { fee: 213 } };
+      return { id, payment_intent: id.replace("ch_test_", "pi_test_"), livemode: false, disputed: disputedCharges.has(id), currency: "usd", amount: 6299, amount_refunded: 0, refunded: false, balance_transaction: pendingFee ? null : { fee: 213 }, ...chargeOverrides.get(id) };
     } },
   };
   const query = async (sql: string, values: unknown[] = [], executor: any = db) => {
@@ -77,7 +103,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     "@/lib/stripe": { getStripe: () => stripe, getStripeMode: () => "test", isStripeReady: () => true },
     // These other webhook paths are not part of booking-payment settlement.
     "@/lib/provider-verification": {},
-    "@/lib/email": {}, "@/lib/affiliates": {}, "@/lib/affiliate-payouts": {},
+    "@/lib/email": {}, "@/lib/affiliates": { syncAffiliateCommissionForBooking: async () => {} }, "@/lib/affiliate-payouts": {},
     "@/lib/tip-payments": {}, "@/lib/provider-age-verification": {},
   };
   const cache = new Map<string, unknown>();
@@ -111,7 +137,12 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       ADD provider_processing_fee_cents integer DEFAULT 0, ADD provider_payout_cents integer DEFAULT 5400,
       ADD processing_fee_status text DEFAULT 'pending', ADD refunded_amount_cents integer DEFAULT 0,
       ADD customer_service_fee_refunded_cents integer DEFAULT 0, ADD customer_service_fee_cents integer DEFAULT 299,
+      ADD stripe_dispute_id text, ADD stripe_dispute_status text, ADD stripe_dispute_reason text, ADD stripe_dispute_opened_at timestamptz, ADD stripe_dispute_closed_at timestamptz,
       ADD refund_status text DEFAULT 'none', ADD refund_failure_reason text, ADD refunded_at timestamptz;
+      ALTER TABLE services ADD business_name text DEFAULT 'Company';
+      ALTER TABLE provider_profiles ADD stripe_account_id text DEFAULT 'acct_test', ADD stripe_connect_mode text DEFAULT 'test', ADD stripe_payouts_enabled boolean DEFAULT true, ADD age_verification_status text DEFAULT 'verified';
+      CREATE TABLE booking_disputes (booking_id uuid, status text);
+      CREATE TABLE booking_tips (id uuid, booking_id uuid, provider_id uuid, amount_cents integer, customer_id text, stripe_transfer_id text, payment_status text, stripe_dispute_id text, stripe_dispute_status text, transfer_failure_reason text, stripe_charge_id text, stripe_mode text);
       CREATE TABLE booking_events (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), booking_id uuid REFERENCES bookings(id), event_type text, message text, metadata jsonb);
       CREATE TABLE notifications (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id text REFERENCES "user"(id), booking_id uuid REFERENCES bookings(id), type text, title text, message text, href text, dedupe_key text UNIQUE);
       CREATE TABLE analytics_events (event_name text, user_id text, anonymous_id text, path text, target_type text, target_id text, metadata jsonb);
@@ -130,7 +161,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
         VALUES ($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002',now(),now()+interval '1 hour','completed','',6000,$2)`, [bookingId, checkoutId]);
       if (hourly) await db.query(`INSERT INTO hourly_projects (id,customer_id,provider_id,service_id,title,description,hourly_rate_cents,cap_minutes,delivery_method,service_address,status,version,payment_booking_id)
         VALUES ($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','Project','Work',6000,120,'REMOTE','','approved',5,$2)`, [projectId, bookingId]);
-      intents.set(intentId, { id: intentId, status: "succeeded", currency: "usd", amount_received: 6299, latest_charge: "ch_test_" + bookingId, metadata: { kind: "booking_payment", bookingId } });
+      intents.set(intentId, { id: intentId, livemode: false, status: "succeeded", currency: "usd", amount_received: 6299, latest_charge: "ch_test_" + bookingId, metadata: { kind: "booking_payment", bookingId } });
       const checkout = { id: checkoutId, payment_status: "paid", payment_intent: intentId, amount_total: 6299, metadata: { kind: "booking_payment", bookingId, paymentFlow: "held_transfer_v1", ...(hourly ? { hourlyProjectId: projectId, timesheetVersion: "5" } : {}) } };
       return { bookingId, projectId, checkout, eventId: "evt_test_" + bookingId };
     };
@@ -338,6 +369,174 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       const results = await Promise.all([reverse(f, 5197, "_concurrent_a"), reverse(f, 5197, "_concurrent_b")]);
       assert.deepEqual(results.map((response) => response.status), [200, 200]);
       assert.equal((await reversalEvents(f.bookingId)).length, 1); assert.equal((await booking(f.bookingId)).stripe_transfer_reversed_cents, 5197);
+    });
+
+    const disputeEvent = async (f: Awaited<ReturnType<typeof fixture>>, status = "needs_response", suffix = status, disputeId = "du_test_" + f.bookingId) => {
+      const payload = JSON.stringify({ id: f.eventId + "_dispute_" + suffix, object: "event", type: status === "needs_response" ? "charge.dispute.created" : "charge.dispute.closed", livemode: false,
+        data: { object: { id: disputeId, charge: "ch_test_" + f.bookingId, payment_intent: f.checkout.payment_intent, status, reason: "fraudulent", metadata: {} } } });
+      return POST(new Request("http://localhost/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": signatureTools.generateTestHeaderString({ payload, secret: webhookSecret }) }, body: payload }));
+    };
+    const disputeAudits = async (id: string) => (await db.query("SELECT event_type FROM booking_events WHERE booking_id=$1 AND event_type LIKE 'stripe_dispute_%'", [id])).rows;
+    const { releaseBookingPayout } = load("@/lib/payment-release");
+    await t.test("dispute before payment linkage stays retryable, then freezes once after signed payment", async () => {
+      const f = await fixture();
+      assert.equal((await disputeEvent(f)).status, 500);
+      assert.equal(await count("stripe_webhook_events", "id", f.eventId + "_dispute_needs_response"), 0);
+      assert.equal((await booking(f.bookingId)).stripe_dispute_id, null);
+      assert.equal((await send(f)).status, 200);
+      assert.equal((await disputeEvent(f)).status, 200);
+      assert.equal((await disputeEvent(f, "needs_response", "duplicate")).status, 200);
+      assert.equal((await booking(f.bookingId)).payment_release_status, "frozen");
+      assert.equal((await disputeAudits(f.bookingId)).length, 1);
+      assert.equal((await releaseBookingPayout(f.bookingId, "customer")).ok, false);
+      assert.equal(transferCalls, 0);
+    });
+    await t.test("unrecognized payment metadata is ignored and inconsistent linkage never attributes a booking", async () => {
+      const unrelated = await fixture();
+      intents.get(unrelated.checkout.payment_intent).metadata = { kind: "unrelated" };
+      assert.equal((await disputeEvent(unrelated)).status, 200);
+      assert.equal((await booking(unrelated.bookingId)).stripe_dispute_id, null);
+      for (const field of ["latest_charge", "livemode"]) {
+        const f = await fixture();
+        intents.get(f.checkout.payment_intent)[field] = field === "livemode" ? true : "ch_test_other";
+        assert.equal((await disputeEvent(f)).status, 500);
+        assert.equal((await booking(f.bookingId)).stripe_dispute_id, null);
+        assert.equal((await disputeAudits(f.bookingId)).length, 0);
+      }
+    });
+    await t.test("close before linkage retries; terminal close before created never reopens", async () => {
+      for (const status of ["won", "lost", "warning_closed"]) {
+        const f = await fixture(false);
+        assert.equal((await disputeEvent(f, status)).status, 500);
+        assert.equal((await send(f)).status, 200);
+        assert.equal((await disputeEvent(f, status)).status, 200);
+        const terminal = await booking(f.bookingId);
+        assert.equal((await disputeEvent(f, "needs_response", "late_open")).status, 200);
+        assert.equal((await disputeEvent(f, status, "late_close")).status, 200);
+        assert.equal((await booking(f.bookingId)).stripe_dispute_status, status);
+        assert.equal((await booking(f.bookingId)).payment_release_status, status === "lost" ? "reversed" : "awaiting_customer");
+        assert.deepEqual((await booking(f.bookingId)).stripe_dispute_closed_at, terminal.stripe_dispute_closed_at);
+        assert.equal((await disputeAudits(f.bookingId)).length, 1);
+      }
+    });
+    await t.test("payment settlement preserves an already-linked dispute hold and loss", async () => {
+      for (const status of ["needs_response", "lost"]) {
+        const f = await fixture();
+        await db.query("UPDATE bookings SET stripe_charge_id=$2 WHERE id=$1", [f.bookingId, "ch_test_" + f.bookingId]);
+        assert.equal((await disputeEvent(f, status)).status, 200);
+        assert.equal((await send(f)).status, 200);
+        assert.equal((await booking(f.bookingId)).payment_status, "paid");
+        assert.equal((await booking(f.bookingId)).payment_release_status, status === "lost" ? "reversed" : "frozen");
+      }
+    });
+    await t.test("winning closure preserves admin, refund, and booking dispute holds", async () => {
+      for (const hold of ["admin", "refund", "booking"]) {
+        const f = await fixture(); await send(f);
+        if (hold === "admin") await db.query("UPDATE bookings SET payout_frozen_at=now(),payout_freeze_reason='Administrator review',payment_release_status='frozen' WHERE id=$1", [f.bookingId]);
+        assert.equal((await disputeEvent(f)).status, 200);
+        if (hold === "refund") await db.query("UPDATE bookings SET refund_status='requested' WHERE id=$1", [f.bookingId]);
+        if (hold === "booking") await db.query("INSERT INTO booking_disputes VALUES ($1,'open')", [f.bookingId]);
+        assert.equal((await disputeEvent(f, "won")).status, 200);
+        const row = await booking(f.bookingId);
+        assert.equal(row.payment_release_status, "frozen"); assert.ok(row.payout_frozen_at);
+        assert.equal(row.payout_freeze_reason, hold === "admin" ? "Administrator review" : hold === "refund" ? "Refund requested" : "Open booking dispute");
+      }
+      const f = await fixture(); await send(f); await disputeEvent(f); await disputeEvent(f, "won");
+      assert.equal((await booking(f.bookingId)).payment_release_status, "awaiting_customer");
+      assert.equal((await booking(f.bookingId)).payout_frozen_at, null);
+    });
+    await t.test("authoritative disputed charge blocks payout without any dispute webhook", async () => {
+      const f = await fixture(); await send(f);
+      disputedCharges.add("ch_test_" + f.bookingId);
+      const result = await releaseBookingPayout(f.bookingId, "automatic");
+      assert.equal(result.ok, false); assert.match(result.error, /dispute/);
+      assert.equal(transferCalls, 0);
+      assert.equal((await booking(f.bookingId)).payment_release_status, "frozen");
+      assert.equal((await booking(f.bookingId)).stripe_dispute_id, null);
+    });
+    await t.test("historical disputed flag permits signed favorable closures but not open or lost cases", async () => {
+      for (const status of ["needs_response", "lost", "won", "warning_closed"]) {
+        const f = await fixture(); await send(f); await disputeEvent(f, status);
+        disputedCharges.add("ch_test_" + f.bookingId);
+        disputeLists.set("ch_test_" + f.bookingId, { has_more: false, data: [{ id: "du_test_" + f.bookingId, charge: "ch_test_" + f.bookingId, payment_intent: f.checkout.payment_intent, livemode: false, status }] });
+        const before = transferCalls;
+        const result = await releaseBookingPayout(f.bookingId, "customer");
+        const favorable = status === "won" || status === "warning_closed";
+        assert.equal(result.ok, favorable);
+        assert.equal(transferCalls, before + (favorable ? 1 : 0));
+      }
+    });
+    await t.test("favorable payout preflight fails closed for stale, incomplete, denied, or mismatched dispute reads", async () => {
+      for (const problem of ["empty", "missing_id", "has_more", "new_case", "escalated", "wrong_charge", "wrong_mode", "wrong_pi", "denied"]) {
+        const f = await fixture(); await send(f); await disputeEvent(f, "won");
+        const charge = "ch_test_" + f.bookingId;
+        disputedCharges.add(charge);
+        const item = { id: "du_test_" + f.bookingId, charge, payment_intent: f.checkout.payment_intent, livemode: false, status: "won" };
+        const list = { has_more: false, data: [item] };
+        if (problem === "empty") list.data = [];
+        if (problem === "missing_id") item.id = "du_test_unrelated";
+        if (problem === "has_more") list.has_more = true;
+        if (problem === "new_case") list.data.push({ ...item, id: "du_test_new", status: "needs_response" });
+        if (problem === "escalated") item.status = "needs_response";
+        if (problem === "wrong_charge") item.charge = "ch_test_other";
+        if (problem === "wrong_mode") item.livemode = true;
+        if (problem === "wrong_pi") item.payment_intent = "pi_test_other";
+        disputeLists.set(charge, problem === "denied" ? new Error("synthetic permission denial") : list);
+        const before = transferCalls;
+        const result = await releaseBookingPayout(f.bookingId, "customer");
+        assert.equal(result.ok, false, problem); assert.match(result.error, /reconciliation/);
+        assert.equal(transferCalls, before); assert.equal((await booking(f.bookingId)).payment_release_status, "frozen");
+      }
+    });
+    await t.test("payout charge preflight rejects wrong charge identity, mode, and intent", async () => {
+      for (const patch of [{ id: "ch_test_other" }, { livemode: true }, { payment_intent: "pi_test_other" }]) {
+        const f = await fixture(); await send(f);
+        chargeOverrides.set("ch_test_" + f.bookingId, patch);
+        const before = transferCalls;
+        assert.equal((await releaseBookingPayout(f.bookingId, "customer")).ok, false);
+        assert.equal(transferCalls, before);
+        assert.equal((await booking(f.bookingId)).payment_release_status, "frozen");
+      }
+    });
+    await t.test("old terminal dispute cannot overwrite a later case on the same charge", async () => {
+      const f = await fixture(); await send(f); await disputeEvent(f, "won");
+      const nextId = "du_test_second_" + f.bookingId;
+      await disputeEvent(f, "needs_response", "new_case", nextId);
+      await disputeEvent(f, "won", "stale_close");
+      await disputeEvent(f, "needs_response", "stale_open");
+      const row = await booking(f.bookingId);
+      assert.equal(row.stripe_dispute_id, nextId);
+      assert.equal(row.stripe_dispute_status, "needs_response");
+      assert.equal(row.payment_release_status, "frozen");
+      assert.equal((await disputeAudits(f.bookingId)).length, 2);
+    });
+    await t.test("existing freeze ownership survives a legacy inconsistent release status", async () => {
+      const f = await fixture(); await send(f);
+      await db.query("UPDATE bookings SET payout_frozen_at=now(),payout_freeze_reason='Administrator review' WHERE id=$1", [f.bookingId]);
+      const before = await booking(f.bookingId);
+      await disputeEvent(f); await disputeEvent(f, "won");
+      const after = await booking(f.bookingId);
+      assert.equal(after.payment_release_status, "frozen");
+      assert.equal(after.payout_freeze_reason, "Administrator review");
+      assert.deepEqual(after.payout_frozen_at, before.payout_frozen_at);
+    });
+    await t.test("concurrent linked payment and dispute preserve the dispute outcome in both start orders", { skip: !postgres }, async () => {
+      for (const status of ["needs_response", "lost"]) for (const paymentFirst of [true, false]) {
+        const f = await fixture();
+        await db.query("UPDATE bookings SET stripe_charge_id=$2 WHERE id=$1", [f.bookingId, "ch_test_" + f.bookingId]);
+        const results = await Promise.all(paymentFirst ? [send(f), disputeEvent(f, status)] : [disputeEvent(f, status), send(f)]);
+        assert.deepEqual(results.map(r => r.status), [200, 200]);
+        const row = await booking(f.bookingId);
+        assert.equal(row.payment_status, "paid");
+        assert.equal(row.payment_release_status, status === "lost" ? "reversed" : "frozen");
+        assert.equal((await disputeAudits(f.bookingId)).length, 1);
+      }
+    });
+    await t.test("concurrent duplicate dispute events serialize their audit", { skip: !postgres }, async () => {
+      const f = await fixture(); await send(f);
+      const results = await Promise.all([disputeEvent(f, "needs_response", "parallel_a"), disputeEvent(f, "needs_response", "parallel_b")]);
+      assert.deepEqual(results.map(r => r.status), [200, 200]);
+      assert.equal((await disputeAudits(f.bookingId)).length, 1);
     });
 
     await t.test("all webhook booking-event JSON queries execute with typed parameters", async () => {
