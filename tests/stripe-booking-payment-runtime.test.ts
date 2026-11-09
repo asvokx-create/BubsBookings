@@ -1,0 +1,305 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- Fake external Stripe boundaries around the real signed handler and PostgreSQL queries. */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
+import { PGlite } from "@electric-sql/pglite";
+import pg from "pg";
+import Stripe from "stripe";
+import ts from "typescript";
+
+const nativeRequire = createRequire(import.meta.url);
+const webhookSecret = "whsec_local_signed_webhook_test_only";
+const signatureTools = new Stripe("sk_test_local_signature_tools_only").webhooks;
+
+for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"} signed booking payment webhook`, {
+  skip: postgres && process.env.BOOKME_MIGRATION_TEST_DATABASE !== "1",
+}, async (t) => {
+  let db: any;
+  let cleanup: () => Promise<void>;
+  if (postgres) {
+    const connectionString = process.env.DATABASE_URL ?? "postgresql://bookme:bookme@127.0.0.1:5432/bookme";
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(new URL(connectionString).hostname)) {
+      throw new Error("Webhook tests require an explicitly opted-in localhost PostgreSQL database.");
+    }
+    const schema = "booking_webhook_test_" + randomUUID().replaceAll("-", "");
+    const admin = new pg.Pool({ connectionString, ssl: false });
+    await admin.query(`CREATE SCHEMA "${schema}"`);
+    const pool = new pg.Pool({ connectionString, ssl: false, options: `-c search_path=${schema}`, max: 8 });
+    db = { query: (sql: string, values: unknown[] = []) => pool.query(sql, values), exec: (sql: string) => pool.query(sql), connect: () => pool.connect() };
+    cleanup = async () => { await pool.end(); await admin.query(`DROP SCHEMA "${schema}" CASCADE`); await admin.end(); };
+  } else {
+    db = new PGlite();
+    cleanup = () => db.close();
+  }
+  const previousSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  process.env.STRIPE_WEBHOOK_SECRET = webhookSecret;
+  t.mock.method(console, "error", () => {});
+  const failures: string[] = [];
+  t.beforeEach(() => { failures.length = 0; });
+  const intents = new Map<string, any>();
+  let chargeCalls = 0;
+  let pendingFee = false;
+  const stripe = {
+    webhooks: signatureTools,
+    paymentIntents: { retrieve: async (id: string) => {
+      assert.ok(intents.has(id), "only a known synthetic payment intent may be retrieved");
+      return intents.get(id);
+    } },
+    charges: { retrieve: async (id: string) => {
+      assert.ok(id.startsWith("ch_test_"));
+      chargeCalls++;
+      return { id, balance_transaction: pendingFee ? null : { fee: 213 } };
+    } },
+  };
+  const query = async (sql: string, values: unknown[] = [], executor: any = db) => {
+    if (failures.length && sql.includes(failures[0])) {
+      failures.shift();
+      // A real database statement error aborts a transaction, unlike a mocked rejection.
+      return executor.query("SELECT 1 / 0 AS simulated_database_failure");
+    }
+    const result = await executor.query(sql, values);
+    return { ...result, rowCount: result.rowCount ?? (result.affectedRows || result.rows.length) };
+  };
+  const database = {
+    query,
+    connect: async () => {
+      if (!postgres) return { query, release() {} };
+      const client = await db.connect();
+      return { query: (sql: string, values: unknown[] = []) => query(sql, values, client), release: () => client.release() };
+    },
+  };
+  const replacements: Record<string, unknown> = {
+    "server-only": {},
+    "@/lib/database": { database },
+    "@/lib/stripe": { getStripe: () => stripe, getStripeMode: () => "test", isStripeReady: () => true },
+    // These other webhook paths are not part of booking-payment settlement.
+    "@/lib/booking-refund-reconciliation": {}, "@/lib/provider-verification": {},
+    "@/lib/email": {}, "@/lib/affiliates": {}, "@/lib/affiliate-payouts": {},
+    "@/lib/tip-payments": {}, "@/lib/provider-age-verification": {},
+  };
+  const cache = new Map<string, unknown>();
+  const load = (name: string, importer = resolve("entry.ts")): any => {
+    const local = name.startsWith("@/") || name.startsWith(".");
+    const file = name.startsWith("@/") ? resolve(name.slice(2) + ".ts") : resolve(dirname(importer), name + ".ts");
+    const replacement = Object.entries(replacements).find(([key]) => key === name || (local && key.startsWith("@/") && resolve(key.slice(2) + ".ts") === file));
+    if (replacement) return replacement[1];
+    if (!local) return nativeRequire(name);
+    if (cache.has(file)) return cache.get(file);
+    const output = ts.transpileModule(readFileSync(file, "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const mod = { exports: {} };
+    cache.set(file, mod.exports);
+    new Function("require", "module", "exports", output)((dependency: string) => load(dependency, file), mod, mod.exports);
+    return mod.exports;
+  };
+  try {
+    // Use the existing marketplace + hourly schema and a focused payment schema.
+    await db.exec(`CREATE TABLE "user" (id text PRIMARY KEY, name text);
+      INSERT INTO "user" VALUES ('customer', 'Customer'), ('provider', 'Provider');`);
+    await db.exec(readFileSync("database/migrations/001_bookme_marketplace.sql", "utf8").replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""));
+    await db.exec(`ALTER TABLE bookings
+      ADD payment_status text DEFAULT 'pending', ADD stripe_checkout_session_id text,
+      ADD stripe_payment_intent_id text, ADD stripe_charge_id text, ADD stripe_mode text DEFAULT 'test',
+      ADD paid_at timestamptz, ADD payment_flow text DEFAULT 'held_transfer_v1', ADD payment_release_status text DEFAULT 'awaiting_payment',
+      ADD payout_frozen_at timestamptz, ADD payout_freeze_reason text, ADD completion_confirmation_due_at timestamptz,
+      ADD payout_released_at timestamptz, ADD stripe_transfer_id text, ADD customer_total_cents integer DEFAULT 6299,
+      ADD platform_fee_cents integer DEFAULT 600, ADD stripe_processing_fee_cents integer,
+      ADD provider_processing_fee_cents integer DEFAULT 0, ADD provider_payout_cents integer DEFAULT 5400,
+      ADD processing_fee_status text DEFAULT 'pending', ADD refunded_amount_cents integer DEFAULT 0,
+      ADD customer_service_fee_refunded_cents integer DEFAULT 0, ADD refund_status text DEFAULT 'none';
+      CREATE TABLE booking_events (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), booking_id uuid REFERENCES bookings(id), event_type text, message text, metadata jsonb);
+      CREATE TABLE notifications (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id text REFERENCES "user"(id), booking_id uuid REFERENCES bookings(id), type text, title text, message text, href text, dedupe_key text UNIQUE);
+      CREATE TABLE analytics_events (event_name text, user_id text, anonymous_id text, path text, target_type text, target_id text, metadata jsonb);
+      CREATE TABLE stripe_webhook_events (id text PRIMARY KEY, event_type text NOT NULL, status text DEFAULT 'processing', created_at timestamptz DEFAULT now(), processed_at timestamptz);
+      INSERT INTO provider_profiles (id,user_id,business_name,city,state) VALUES ('00000000-0000-4000-8000-000000000001','provider','Company','City','ST');
+      INSERT INTO services (id,provider_id,slug,category,title,description,price_cents,duration_minutes) VALUES ('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','repair','repair','Repair','Repair service',6000,60);`);
+    await db.exec(readFileSync("database/migrations/111_hourly_projects.sql", "utf8"));
+    const { POST } = load("@/app/api/stripe/webhook/route") as { POST: (request: Request) => Promise<Response> };
+    const fixture = async (hourly = true) => {
+      const bookingId = randomUUID();
+      const projectId = randomUUID();
+      const checkoutId = "cs_test_" + bookingId;
+      const intentId = "pi_test_" + bookingId;
+      await db.query(`INSERT INTO bookings (id,customer_id,provider_id,service_id,starts_at,ends_at,status,service_address,price_cents,stripe_checkout_session_id)
+        VALUES ($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002',now(),now()+interval '1 hour','completed','',6000,$2)`, [bookingId, checkoutId]);
+      if (hourly) await db.query(`INSERT INTO hourly_projects (id,customer_id,provider_id,service_id,title,description,hourly_rate_cents,cap_minutes,delivery_method,service_address,status,version,payment_booking_id)
+        VALUES ($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','Project','Work',6000,120,'REMOTE','','approved',5,$2)`, [projectId, bookingId]);
+      intents.set(intentId, { id: intentId, status: "succeeded", currency: "usd", amount_received: 6299, latest_charge: "ch_test_" + bookingId, metadata: { kind: "booking_payment", bookingId } });
+      const checkout = { id: checkoutId, payment_status: "paid", payment_intent: intentId, amount_total: 6299, metadata: { kind: "booking_payment", bookingId, paymentFlow: "held_transfer_v1", ...(hourly ? { hourlyProjectId: projectId, timesheetVersion: "5" } : {}) } };
+      return { bookingId, projectId, checkout, eventId: "evt_test_" + bookingId };
+    };
+    const send = async (f: Awaited<ReturnType<typeof fixture>>, options: { eventId?: string; type?: string; livemode?: boolean; badSignature?: boolean } = {}) => {
+      const payload = JSON.stringify({ id: options.eventId ?? f.eventId, object: "event", type: options.type ?? "checkout.session.completed", livemode: options.livemode ?? false, created: Math.floor(Date.now() / 1000), data: { object: f.checkout } });
+      const signature = signatureTools.generateTestHeaderString({ payload, secret: options.badSignature ? "whsec_wrong_local_secret" : webhookSecret });
+      return POST(new Request("http://localhost/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": signature }, body: payload }));
+    };
+    const booking = async (id: string) => (await db.query("SELECT * FROM bookings WHERE id=$1", [id])).rows[0];
+    const count = async (table: string, column: string, id: string) => (await db.query(`SELECT count(*)::integer AS count FROM ${table} WHERE ${column}=$1`, [id])).rows[0].count;
+    const assertSettled = async (f: Awaited<ReturnType<typeof fixture>>) => {
+      const paid = await booking(f.bookingId);
+      assert.equal(paid.payment_status, "paid");
+      assert.equal(paid.payment_release_status, "awaiting_customer");
+      assert.equal(paid.processing_fee_status, "final");
+      assert.equal(paid.stripe_processing_fee_cents, 213);
+      assert.equal(paid.provider_processing_fee_cents, 203);
+      assert.equal(paid.provider_payout_cents, 5197);
+      assert.equal(paid.stripe_payment_intent_id, f.checkout.payment_intent);
+      assert.ok(paid.paid_at);
+      assert.ok(paid.completion_confirmation_due_at);
+      assert.equal(paid.payout_released_at, null);
+      const events = (await db.query("SELECT * FROM booking_events WHERE booking_id=$1", [f.bookingId])).rows;
+      assert.equal(events.length, 1);
+      assert.equal(events[0].event_type, "payment_received");
+      assert.deepEqual(events[0].metadata, { checkoutSessionId: f.checkout.id });
+      const recipients = (await db.query("SELECT user_id FROM notifications WHERE booking_id=$1 ORDER BY user_id", [f.bookingId])).rows;
+      assert.deepEqual(recipients.map((row: any) => row.user_id), ["customer", "provider"]);
+      assert.equal(await count("analytics_events", "target_id", f.bookingId), 1);
+    };
+
+    await t.test("first signed hourly payment and same/different-event duplicates settle once", async () => {
+      const f = await fixture();
+      const response = await send(f);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { received: true });
+      await assertSettled(f);
+      const original = await booking(f.bookingId);
+      assert.deepEqual(await (await send(f)).json(), { received: true, duplicate: true });
+      assert.equal((await send(f, { eventId: f.eventId + "_async", type: "checkout.session.async_payment_succeeded" })).status, 200);
+      await assertSettled(f);
+      assert.deepEqual((await booking(f.bookingId)).paid_at, original.paid_at);
+      assert.deepEqual((await booking(f.bookingId)).completion_confirmation_due_at, original.completion_confirmation_due_at);
+      assert.equal(chargeCalls, 1);
+    });
+
+    for (const failure of ["UPDATE bookings SET stripe_processing_fee_cents", "INSERT INTO booking_events", "'Payment received',"]) {
+      await t.test(`database failure at ${failure} rolls back, then the signed retry completes once`, async () => {
+        const f = await fixture();
+        failures.push(failure);
+        assert.equal((await send(f)).status, 500);
+        assert.equal(failures.length, 0, "the intended production SQL was reached");
+        const unpaid = await booking(f.bookingId);
+        assert.equal(unpaid.payment_status, "pending");
+        assert.equal(unpaid.paid_at, null);
+        assert.equal(unpaid.processing_fee_status, "pending");
+        assert.equal(unpaid.stripe_processing_fee_cents, null);
+        assert.equal(await count("booking_events", "booking_id", f.bookingId), 0);
+        assert.equal(await count("notifications", "booking_id", f.bookingId), 0);
+        assert.equal(await count("stripe_webhook_events", "id", f.eventId), 0);
+        assert.equal((await send(f)).status, 200);
+        await assertSettled(f);
+        assert.deepEqual(await (await send(f)).json(), { received: true, duplicate: true });
+      });
+    }
+
+    await t.test("a webhook-acknowledgment failure retries without duplicating committed settlement", async () => {
+      const f = await fixture();
+      failures.push("UPDATE stripe_webhook_events SET status");
+      assert.equal((await send(f)).status, 500);
+      await assertSettled(f);
+      assert.equal((await send(f)).status, 200);
+      await assertSettled(f);
+      assert.equal((await db.query("SELECT status FROM stripe_webhook_events WHERE id=$1", [f.eventId])).rows[0].status, "processed");
+    });
+
+    await t.test("an event arriving before session persistence remains retryable", async () => {
+      const f = await fixture();
+      await db.query("UPDATE bookings SET stripe_checkout_session_id=NULL WHERE id=$1", [f.bookingId]);
+      assert.equal((await send(f)).status, 500);
+      assert.equal((await booking(f.bookingId)).payment_status, "pending");
+      assert.equal(await count("stripe_webhook_events", "id", f.eventId), 0);
+      await db.query("UPDATE bookings SET stripe_checkout_session_id=$2 WHERE id=$1", [f.bookingId, f.checkout.id]);
+      assert.equal((await send(f)).status, 200);
+      await assertSettled(f);
+    });
+
+    await t.test("invalid signature and wrong Stripe mode cannot claim or settle an event", async () => {
+      const f = await fixture();
+      assert.equal((await send(f, { badSignature: true })).status, 400);
+      assert.equal((await send(f, { livemode: true })).status, 400);
+      assert.equal(await count("stripe_webhook_events", "id", f.eventId), 0);
+      assert.equal((await booking(f.bookingId)).payment_status, "pending");
+    });
+
+    await t.test("legacy fixed-price payments still settle through the same handler", async () => {
+      const f = await fixture(false);
+      assert.equal((await send(f)).status, 200);
+      await assertSettled(f);
+    });
+
+    await t.test("a later success event never revives a refunded payment", async () => {
+      const f = await fixture();
+      assert.equal((await send(f)).status, 200);
+      await db.query("UPDATE bookings SET payment_status='refunded', payment_release_status='reversed' WHERE id=$1", [f.bookingId]);
+      const refunded = await booking(f.bookingId);
+      const beforeChargeCalls = chargeCalls;
+      assert.equal((await send(f, { eventId: f.eventId + "_late", type: "checkout.session.async_payment_succeeded" })).status, 200);
+      const unchanged = await booking(f.bookingId);
+      assert.equal(unchanged.payment_status, "refunded");
+      assert.equal(unchanged.payment_release_status, "reversed");
+      assert.deepEqual(unchanged.paid_at, refunded.paid_at);
+      assert.deepEqual(unchanged.completion_confirmation_due_at, refunded.completion_confirmation_due_at);
+      assert.equal(chargeCalls, beforeChargeCalls);
+      assert.equal(await count("booking_events", "booking_id", f.bookingId), 1);
+      assert.equal(await count("notifications", "booking_id", f.bookingId), 2);
+    });
+
+    await t.test("a mismatched paid amount does not mutate the booking", async () => {
+      const f = await fixture();
+      intents.get(f.checkout.payment_intent).amount_received = 6300;
+      assert.equal((await send(f)).status, 500);
+      assert.equal((await booking(f.bookingId)).payment_status, "pending");
+      assert.equal(await count("booking_events", "booking_id", f.bookingId), 0);
+      assert.equal(await count("notifications", "booking_id", f.bookingId), 0);
+      intents.get(f.checkout.payment_intent).amount_received = 6299;
+      assert.equal((await send(f)).status, 200);
+      await assertSettled(f);
+    });
+
+    await t.test("unavailable Stripe fee data keeps payout pending without losing payment notifications", async () => {
+      const f = await fixture();
+      pendingFee = true;
+      try { assert.equal((await send(f)).status, 200); } finally { pendingFee = false; }
+      assert.equal((await booking(f.bookingId)).payment_status, "paid");
+      assert.equal((await booking(f.bookingId)).processing_fee_status, "pending");
+      assert.equal(await count("booking_events", "booking_id", f.bookingId), 1);
+      assert.equal(await count("notifications", "booking_id", f.bookingId), 2);
+    });
+
+    await t.test("all webhook booking-event JSON queries execute with typed parameters", async () => {
+      const f = await fixture();
+      const parameters: Record<string, unknown[]> = {
+        payment_received: [f.bookingId, "cs_test_json"],
+        tip_paid: [f.bookingId, randomUUID(), 500, "cs_test_tip"],
+        tip_review_required: [f.bookingId, randomUUID(), 50000],
+        transfer_reversed: [f.bookingId, "Transfer reversed", "tr_test_json", 500],
+        stripe_dispute_opened: [f.bookingId, "Dispute opened", "dp_test_json", "fraudulent", false],
+        stripe_dispute_closed: [f.bookingId, "Dispute closed", "dp_test_json", "won"],
+      };
+      const source = ts.createSourceFile("route.ts", readFileSync("app/api/stripe/webhook/route.ts", "utf8"), ts.ScriptTarget.Latest, true);
+      const queries: string[] = [];
+      const visit = (node: ts.Node) => {
+        if (ts.isNoSubstitutionTemplateLiteral(node) && node.text.includes("INSERT INTO booking_events") && node.text.includes("jsonb_build_object")) queries.push(node.text);
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      assert.equal(queries.length, Object.keys(parameters).length);
+      for (const sql of queries) {
+        const eventType = Object.keys(parameters).find((key) => sql.includes(`'${key}'`));
+        assert.ok(eventType, "every production event query has a runtime fixture");
+        await db.query(sql, parameters[eventType]);
+      }
+      const rows = (await db.query("SELECT event_type,metadata FROM booking_events WHERE booking_id=$1", [f.bookingId])).rows;
+      assert.equal(rows.length, 6);
+      assert.equal(rows.find((row: any) => row.event_type === "tip_paid").metadata.amountCents, 500);
+      assert.equal(rows.find((row: any) => row.event_type === "stripe_dispute_opened").metadata.payoutAlreadySent, false);
+    });
+  } finally {
+    if (previousSecret === undefined) delete process.env.STRIPE_WEBHOOK_SECRET;
+    else process.env.STRIPE_WEBHOOK_SECRET = previousSecret;
+    await cleanup();
+  }
+});

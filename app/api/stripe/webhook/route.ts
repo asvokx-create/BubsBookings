@@ -188,7 +188,12 @@ async function markBookingPaid(checkout: Stripe.Checkout.Session) {
   chargeId = idOf(paymentIntent.latest_charge);
   if (!chargeId) throw new Error("Stripe booking payment was missing its charge record.");
   const heldTransfer = checkout.metadata.paymentFlow === "held_transfer_v1";
-  const updated = await database.query(`UPDATE bookings SET payment_status = 'paid', stripe_payment_intent_id = $2,
+  const client = await database.connect();
+  try {
+    // Commit payment state, its audit event and both notifications together.
+    // Otherwise a retry would skip the already-paid booking after a partial failure.
+    await client.query("BEGIN");
+    const updated = await client.query(`UPDATE bookings SET payment_status = 'paid', stripe_payment_intent_id = $2,
       stripe_charge_id = $5, stripe_mode = $4, paid_at = now(),
       payment_release_status = CASE
         WHEN $6 AND payout_frozen_at IS NOT NULL THEN 'frozen'
@@ -203,22 +208,32 @@ async function markBookingPaid(checkout: Stripe.Checkout.Session) {
       AND payment_status IN ('unpaid', 'pending', 'failed')
       AND customer_total_cents = $7
     RETURNING id`, [checkout.metadata.bookingId, paymentIntentId, checkout.id, getStripeMode(), chargeId, heldTransfer, checkout.amount_total]);
-  if (!updated.rowCount) return;
-  await reconcileBookingProcessingFee(checkout.metadata.bookingId, chargeId);
-  await database.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
-    VALUES ($1::uuid, 'payment_received', 'Payment received through Stripe.', jsonb_build_object('checkoutSessionId', $2))`, [checkout.metadata.bookingId, checkout.id]);
-  await database.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
+    if (!updated.rowCount) {
+      await client.query("COMMIT");
+      return;
+    }
+    await reconcileBookingProcessingFee(checkout.metadata.bookingId, chargeId, client);
+    await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
+    VALUES ($1::uuid, 'payment_received', 'Payment received through Stripe.', jsonb_build_object('checkoutSessionId', $2::text))`, [checkout.metadata.bookingId, checkout.id]);
+    await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
     SELECT p.user_id, b.id, 'booking_payment', 'Customer payment received',
       '$' || to_char((b.price_cents - b.platform_fee_cents)::numeric / 100, 'FM999999990.00') || ' is secured for ' || s.title || '.',
       '/provider/dashboard/bookings/' || b.id::text, 'payment-received-' || b.id::text || '-provider'
     FROM bookings b JOIN provider_profiles p ON p.id = b.provider_id JOIN services s ON s.id = b.service_id
     WHERE b.id::text = $1 ON CONFLICT (dedupe_key) DO NOTHING`, [checkout.metadata.bookingId]);
-  await database.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
+    await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
     SELECT b.customer_id, b.id, 'booking_payment', 'Payment received',
       '$' || to_char(b.customer_total_cents::numeric / 100, 'FM999999990.00') || ' was processed through Stripe for ' || s.title || '.',
       '/account/bookings/' || b.id::text, 'payment-received-' || b.id::text || '-customer'
     FROM bookings b JOIN services s ON s.id = b.service_id
     WHERE b.id::text = $1 ON CONFLICT (dedupe_key) DO NOTHING`, [checkout.metadata.bookingId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
   await recordAnalytics({ eventName: "payment_completed", targetType: "booking", targetId: checkout.metadata.bookingId, metadata: { amountTotal: checkout.amount_total } });
 }
 
@@ -238,7 +253,7 @@ async function markBookingTipPaid(checkout: Stripe.Checkout.Session) {
   const tip = updated.rows[0];
   if (!tip) return;
   await database.query(`INSERT INTO booking_events (booking_id,event_type,message,metadata)
-    VALUES ($1::uuid,'tip_paid','Customer tip payment received through Stripe.',jsonb_build_object('tipId',$2,'amountCents',$3,'checkoutSessionId',$4))`,
+    VALUES ($1::uuid,'tip_paid','Customer tip payment received through Stripe.',jsonb_build_object('tipId',$2::text,'amountCents',$3::integer,'checkoutSessionId',$4::text))`,
     [tip.booking_id, tip.id, tip.amount_cents, checkout.id]);
   await database.query(`INSERT INTO notifications (user_id,booking_id,type,title,message,href,dedupe_key)
     VALUES ($1,$2::uuid,'tip_paid','Tip payment successful',$3,'/account/bookings/' || $2::uuid::text,'tip-paid-' || $4)
@@ -246,7 +261,7 @@ async function markBookingTipPaid(checkout: Stripe.Checkout.Session) {
   void sendTransactionalEmail({ to: tip.customer_email, userId: tip.customer_id, bookingId: tip.booking_id, emailType: "tip_receipt", idempotencyKey: `tip-receipt-${tip.id}`, subject: "Your BubsBookings tip receipt", heading: "Thank you for your tip", message: `Your $${(tip.amount_cents / 100).toFixed(2)} tip for ${tip.service_title} was processed through Stripe. BubsBookings does not take a marketplace fee from tips.`, actionLabel: "View receipt", actionUrl: `/account/bookings/${tip.booking_id}` });
   if (tip.risk_status === "review") {
     await database.query(`INSERT INTO booking_events (booking_id,event_type,message,metadata)
-      VALUES ($1::uuid,'tip_review_required','A high-value customer tip needs an administrator review before provider transfer.',jsonb_build_object('tipId',$2,'amountCents',$3))`, [tip.booking_id, tip.id, tip.amount_cents]);
+      VALUES ($1::uuid,'tip_review_required','A high-value customer tip needs an administrator review before provider transfer.',jsonb_build_object('tipId',$2::text,'amountCents',$3::integer))`, [tip.booking_id, tip.id, tip.amount_cents]);
     return;
   }
   await releaseTipTransfer(tip.id);
@@ -317,7 +332,7 @@ async function recordTransferReversed(transfer: Stripe.Transfer) {
     WHERE id::text = $1 AND stripe_transfer_id = $2 AND stripe_mode = $6`,
     [bookingId, transfer.id, fullyReversed, transfer.amount, transfer.amount_reversed, getStripeMode()]);
   await database.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
-    SELECT $1::uuid, 'transfer_reversed', $2, jsonb_build_object('transferId', $3, 'amountReversed', $4::integer)
+    SELECT $1::uuid, 'transfer_reversed', $2, jsonb_build_object('transferId', $3::text, 'amountReversed', $4::integer)
     WHERE NOT EXISTS (SELECT 1 FROM booking_events WHERE booking_id = $1::uuid AND event_type = 'transfer_reversed'
       AND metadata->>'transferId' = $3 AND (metadata->>'amountReversed')::integer = $4::integer)`,
     [bookingId, fullyReversed ? "The provider transfer was fully reversed." : "The provider transfer was partially reversed.", transfer.id, transfer.amount_reversed]);
@@ -446,7 +461,7 @@ async function recordStripeDisputeOpened(dispute: Stripe.Dispute) {
     await syncAffiliateCommissionForBooking(booking.id, client);
     await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
       VALUES ($1::uuid, 'stripe_dispute_opened', $2,
-      jsonb_build_object('stripeDisputeId', $3, 'reason', $4, 'payoutAlreadySent', $5))`,
+      jsonb_build_object('stripeDisputeId', $3::text, 'reason', $4::text, 'payoutAlreadySent', $5::boolean))`,
       [booking.id, payoutAlreadySent
         ? "A bank chargeback was opened after the provider payout. Administrator review is required."
         : "A bank chargeback was opened. The unreleased provider payout is frozen while Stripe reviews it.",
@@ -551,7 +566,7 @@ async function recordStripeDisputeClosed(dispute: Stripe.Dispute) {
       : "The bank closed the chargeback in the platform's favor. Any eligible held payout returned to the normal release process.";
     await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
       VALUES ($1::uuid, 'stripe_dispute_closed', $2,
-      jsonb_build_object('stripeDisputeId', $3, 'status', $4))`,
+      jsonb_build_object('stripeDisputeId', $3::text, 'status', $4::text))`,
       [booking.id, outcomeMessage, dispute.id, dispute.status]);
     await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
       VALUES ($1, $3::uuid, 'stripe_dispute', 'Bank chargeback closed', $4,
