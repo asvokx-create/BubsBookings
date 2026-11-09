@@ -7,8 +7,10 @@ import { syncAffiliateCommissionForBooking } from "./affiliates";
 import { reconcileBookingProcessingFee } from "./booking-processing-fees";
 import { BOOKING_REFUND_RECONCILIATION, bookingRefundWarning, recordPendingBookingRefund } from "./booking-refund-operations";
 import { BOOKING_PAYOUT_RECONCILIATION, recordBookingPayoutTransfer } from "./booking-payout-reconciliation";
+import { finalizeBookingPayout, finalizeBookingPayoutInTransaction, finalizePendingBookingPayouts } from "./booking-payout-finalization";
 
 export const CUSTOMER_CONFIRMATION_HOURS = 48;
+const PAYOUT_FINALIZATION_PENDING = "The payout was sent, but its records still need finalization. Please try again shortly.";
 
 type ReleaseResult =
   | { ok: true; released: boolean; transferId?: string }
@@ -20,10 +22,21 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
   // Reconcile before taking the payout row lock. The reconciliation writes the
   // same booking row, so doing it inside the transfer transaction would wait on
   // our own lock. A later conditional claim still protects the transfer race.
-  const feeTarget = await database.query<{ stripe_charge_id: string | null }>(
-    "SELECT stripe_charge_id FROM bookings WHERE id::text = $1 AND stripe_mode = $2",
+  const feeTarget = await database.query<{ stripe_charge_id: string | null; stripe_transfer_id: string | null }>(
+    "SELECT stripe_charge_id, stripe_transfer_id FROM bookings WHERE id::text = $1 AND stripe_mode = $2",
     [bookingId, getStripeMode()],
   );
+  // Known money movement needs only local finalization, even if Stripe fee
+  // reconciliation is temporarily unavailable. Never resend the transfer.
+  if (feeTarget.rows[0]?.stripe_transfer_id) {
+    try {
+      await finalizeBookingPayout(bookingId, getStripeMode());
+      return { ok: true, released: false, transferId: feeTarget.rows[0].stripe_transfer_id };
+    } catch (error) {
+      console.error("Provider payout finalization failed", bookingId, error);
+      return { ok: false, error: PAYOUT_FINALIZATION_PENDING };
+    }
+  }
   const processingFee = await reconcileBookingProcessingFee(bookingId, feeTarget.rows[0]?.stripe_charge_id);
   if (processingFee.status !== "final") {
     return { ok: false, error: "Stripe is still finalizing this payment. Please try the payout again shortly." };
@@ -34,6 +47,7 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
   let lockAttempted = false;
   let transferAttempted = false;
   let knownTransferId: string | null = null;
+  let transferRecorded = false;
   try {
     // Keep the dispute lock across the durable claim COMMIT. Transaction-level
     // dispute locks use this exact key and cannot slip between checks and send.
@@ -70,11 +84,13 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
     const booking = claimed.rows[0];
     if (!booking) {
       const current = await client.query<{ payment_release_status: string; stripe_transfer_id: string | null }>(
-        "SELECT payment_release_status, stripe_transfer_id FROM bookings WHERE id::text = $1", [bookingId]);
-      await client.query("ROLLBACK");
+        "SELECT payment_release_status, stripe_transfer_id FROM bookings WHERE id::text = $1 AND stripe_mode = $2", [bookingId, getStripeMode()]);
       if (current.rows[0]?.payment_release_status === "paid_out" || current.rows[0]?.stripe_transfer_id) {
+        await finalizeBookingPayoutInTransaction(bookingId, getStripeMode(), client);
+        await client.query("COMMIT");
         return { ok: true, released: false, transferId: current.rows[0].stripe_transfer_id ?? undefined };
       }
+      await client.query("ROLLBACK");
       return { ok: false, error: "This payout is not ready, is frozen, or has an open refund or dispute." };
     }
     if (!booking.stripe_account_id || !booking.stripe_charge_id || booking.provider_payout_cents < 1) {
@@ -127,6 +143,9 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
       await client.query("COMMIT");
       return {ok:false,error:"This payment needs refund reconciliation before payout."};
     }
+    await client.query(`INSERT INTO booking_payout_finalizations (booking_id, release_trigger, amount_cents, refunded_cents)
+      VALUES ($1::uuid, $2, $3, $4) ON CONFLICT (booking_id) DO NOTHING`,
+    [bookingId, trigger, booking.provider_payout_cents, booking.refunded_amount_cents + booking.customer_service_fee_refunded_cents]);
     // Commit a non-retryable marker before the external operation. Retain the
     // session advisory lock, then re-lock/revalidate the row for the send.
     await client.query("COMMIT");
@@ -164,32 +183,15 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
     if (!recorded.rowCount) throw new Error("The provider transfer needs payment reconciliation.");
     // Known transfer evidence must survive any later audit/notification rollback.
     await client.query("COMMIT");
+    transferRecorded = true;
     await client.query("BEGIN");
-    await syncAffiliateCommissionForBooking(bookingId, client);
-    await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
-      VALUES ($1::uuid, 'payout_released', $2, jsonb_build_object('transferId', $3::text, 'trigger', $4::text))`,
-      [bookingId, `Provider payout of $${(booking.provider_payout_cents / 100).toFixed(2)} was released through Stripe.`, transfer.id, trigger]);
-    if (trigger === "automatic") {
-      await client.query(`INSERT INTO booking_events (booking_id, event_type, message)
-        SELECT $1::uuid, 'customer_review_expired', 'The 48-hour customer review window ended without a reported problem.'
-        WHERE NOT EXISTS (SELECT 1 FROM booking_events WHERE booking_id = $1::uuid AND event_type = 'customer_review_expired')`, [bookingId]);
-      await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-        VALUES ($1, $2::uuid, 'review_window_closed', 'Review window closed', $3,
-          '/account/bookings/' || $2::uuid::text, 'review-window-closed-' || $2::uuid::text)
-        ON CONFLICT (dedupe_key) DO NOTHING`, [booking.customer_id, bookingId,
-        `The 48-hour review window for ${booking.service_title} ended and the provider payout was released.`]);
-    }
-    await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-      VALUES ($1, $2::uuid, 'payout_released', 'Payout released', $3,
-      '/provider/dashboard/bookings/' || $2::uuid::text, 'payout-released-' || $2::uuid::text)
-      ON CONFLICT (dedupe_key) DO NOTHING`,
-      [booking.provider_user_id, bookingId, `$${(booking.provider_payout_cents / 100).toFixed(2)} for ${booking.service_title} was sent to your Stripe balance.`]);
+    await finalizeBookingPayoutInTransaction(bookingId, getStripeMode(), client);
     await client.query("COMMIT");
     return { ok: true, released: true, transferId: transfer.id };
   } catch (error) {
     console.error("Provider payout release failed", bookingId, knownTransferId, error);
     await client.query("ROLLBACK").catch(() => undefined);
-    return { ok: false, error: transferAttempted ? BOOKING_PAYOUT_RECONCILIATION : "This payout could not be completed. An administrator can review it." };
+    return { ok: false, error: transferRecorded ? PAYOUT_FINALIZATION_PENDING : transferAttempted ? BOOKING_PAYOUT_RECONCILIATION : "This payout could not be completed. An administrator can review it." };
   } finally {
     let discardClient = lockAttempted && !lockHeld;
     if (lockHeld) {
@@ -203,6 +205,7 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
 }
 
 export async function releaseDuePayouts(limit = 50) {
+  const finalization = await finalizePendingBookingPayouts(getStripeMode(), limit);
   const due = await database.query<{ id: string }>(`SELECT id::text FROM bookings
     WHERE payment_release_status IN ('awaiting_customer', 'failed')
       AND refund_status NOT IN ('requested', 'processing', 'failed')
@@ -220,8 +223,8 @@ export async function releaseDuePayouts(limit = 50) {
     else if (!result.ok) failed.push(booking.id);
   }
   await database.query("INSERT INTO operations_checks (check_type, status, details) VALUES ('payment_releases', $1, $2::jsonb)",
-    [failed.length ? "warning" : "ok", JSON.stringify({ eligible: due.rowCount, released, failed })]);
-  return { eligible: due.rowCount, released, failed };
+    [failed.length || finalization.failed.length ? "warning" : "ok", JSON.stringify({ eligible: due.rowCount, released, failed, finalization })]);
+  return { eligible: due.rowCount, released, failed, finalization };
 }
 
 export async function refundUnreleasedBooking(bookingId: string, reason: string) {

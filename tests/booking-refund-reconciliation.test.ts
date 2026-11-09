@@ -23,6 +23,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
       if(name==="./affiliates")return {syncAffiliateCommissionForBooking:async()=>{}};
       if(name==="./booking-financials")return load("lib/booking-financials.ts");
       if(name==="./booking-refund-operations")return load("lib/booking-refund-operations.ts");
+      if(name==="./booking-payout-finalization")return load("lib/booking-payout-finalization.ts");
       if(name==="./booking-payout-reconciliation")return load("lib/booking-payout-reconciliation.ts");
       throw new Error(`Unexpected import ${name}`);
     },mod,mod.exports);return mod.exports;
@@ -31,7 +32,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
     await db.exec(`
       CREATE TABLE provider_profiles(id uuid,user_id text,age_verification_status text,stripe_connect_mode text,stripe_payouts_enabled boolean,stripe_account_id text);
       CREATE TABLE services(id uuid,business_name text,title text);
-      CREATE TABLE bookings(id uuid,customer_id text,provider_id uuid,service_id uuid,payment_status text,stripe_mode text,payment_release_status text,payout_failure_reason text,payout_frozen_at timestamptz,payout_freeze_reason text,status text,refund_status text,stripe_transfer_id text,stripe_charge_id text,stripe_payment_intent_id text,provider_payout_cents integer,payment_flow text,price_cents integer,customer_service_fee_cents integer,customer_total_cents integer,refunded_amount_cents integer,customer_service_fee_refunded_cents integer,refunded_at timestamptz,payout_released_at timestamptz);
+      CREATE TABLE bookings(id uuid PRIMARY KEY,customer_id text,provider_id uuid,service_id uuid,payment_status text,stripe_mode text,payment_release_status text,payout_failure_reason text,payout_frozen_at timestamptz,payout_freeze_reason text,status text,refund_status text,stripe_transfer_id text,stripe_charge_id text,stripe_payment_intent_id text,provider_payout_cents integer,payment_flow text,price_cents integer,customer_service_fee_cents integer,customer_total_cents integer,refunded_amount_cents integer,customer_service_fee_refunded_cents integer,refunded_at timestamptz,payout_released_at timestamptz);
       ALTER TABLE bookings ADD stripe_dispute_id text, ADD stripe_dispute_status text, ADD stripe_dispute_closed_at timestamptz;
       ALTER TABLE bookings ADD platform_fee_cents integer DEFAULT 1000,ADD stripe_processing_fee_cents integer,ADD provider_processing_fee_cents integer DEFAULT 0,ADD processing_fee_status text DEFAULT 'pending',ADD refund_failure_reason text,ADD stripe_transfer_reversed_cents integer DEFAULT 0;
       CREATE TABLE booking_disputes(booking_id uuid,status text);
@@ -40,6 +41,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
       INSERT INTO provider_profiles VALUES('00000000-0000-4000-8000-000000000001','provider','verified','test',true,'acct_test');
       INSERT INTO services VALUES('00000000-0000-4000-8000-000000000002','Company','Work');
     `);
+    await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
     const id="00000000-0000-4000-8000-000000000003";
     const reset=async()=>{await db.exec("DELETE FROM bookings");await db.query(`INSERT INTO bookings(id,customer_id,provider_id,service_id,payment_status,stripe_mode,payment_release_status,status,refund_status,stripe_charge_id,stripe_payment_intent_id,provider_payout_cents,payment_flow,price_cents,customer_service_fee_cents,customer_total_cents,refunded_amount_cents,customer_service_fee_refunded_cents)
       VALUES($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','paid','test','awaiting_customer','completed','none','ch_test','pi_test',9000,'held_transfer_v1',10000,299,10299,0,0)`,[id]);charge.amount_refunded=0;charge.refunded=false;};

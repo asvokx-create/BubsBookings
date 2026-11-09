@@ -153,6 +153,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       INSERT INTO provider_profiles (id,user_id,business_name,city,state) VALUES ('00000000-0000-4000-8000-000000000001','provider','Company','City','ST');
       INSERT INTO services (id,provider_id,slug,category,title,description,price_cents,duration_minutes) VALUES ('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','repair','repair','Repair','Repair service',6000,60);`);
     await db.exec(readFileSync("database/migrations/111_hourly_projects.sql", "utf8"));
+    await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
     const { POST } = load("@/app/api/stripe/webhook/route") as { POST: (request: Request) => Promise<Response> };
     const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
     const fixture = async (hourly = true) => {
@@ -546,7 +547,9 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const payoutWarning = "Provider payout outcome requires reconciliation. Contact support before retrying.";
     const unknownPayoutFixture = async () => {
       const f = await fixture(false); await send(f);
-      await db.query("UPDATE bookings SET payment_release_status='processing',payout_failure_reason=$2 WHERE id=$1", [f.bookingId, payoutWarning]); return f;
+      await db.query("UPDATE bookings SET payment_release_status='processing',payout_failure_reason=$2 WHERE id=$1", [f.bookingId, payoutWarning]);
+      await db.query("INSERT INTO booking_payout_finalizations(booking_id,release_trigger,amount_cents) VALUES($1,'customer',5197)", [f.bookingId]);
+      return f;
     };
     const transferCreated = async (f: Awaited<ReturnType<typeof fixture>>, patch: Record<string, unknown> = {}, livemode = false) => {
       const payload = JSON.stringify({ id: "evt_test_transfer_" + randomUUID(), object: "event", type: "transfer.created", livemode,
@@ -556,6 +559,19 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
         "stripe-signature": signatureTools.generateTestHeaderString({ payload, secret: webhookSecret }),
       }, body: payload }));
     };
+    await t.test("signed transfer evidence survives follow-up failure and duplicate events finalize once", async () => {
+      const f = await unknownPayoutFixture(); const transfersBefore = transferCalls;
+      failures.push("INSERT INTO notifications");
+      assert.equal((await transferCreated(f, { metadata: { bookingId: f.bookingId, kind: "provider_payout", releaseTrigger: "automatic" } })).status, 500);
+      assert.equal((await booking(f.bookingId)).stripe_transfer_id, "tr_test_" + f.bookingId);
+      assert.equal((await db.query("SELECT completed_at FROM booking_payout_finalizations WHERE booking_id=$1", [f.bookingId])).rows[0].completed_at, null);
+      assert.equal((await transferCreated(f)).status, 200); assert.equal((await transferCreated(f)).status, 200);
+      const events = (await db.query("SELECT metadata FROM booking_events WHERE booking_id=$1 AND event_type='payout_released'", [f.bookingId])).rows;
+      assert.equal(events.length, 1); assert.equal(events[0].metadata.trigger, "customer");
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM notifications WHERE booking_id=$1 AND type='payout_released'", [f.bookingId])).rows[0].n, 1);
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM booking_events WHERE booking_id=$1 AND event_type='customer_review_expired'", [f.bookingId])).rows[0].n, 0);
+      assert.equal(transferCalls, transfersBefore);
+    });
     await t.test("signed delayed transfer confirms only matching kind, mode, amount, destination and source", async () => {
       for (const patch of [{ amount: 5196 }, { destination: "acct_unrelated" }, { source_transaction: "ch_test_unrelated" },
         { metadata: { kind: "unrelated" } }, { source_transaction: null }]) {
@@ -588,6 +604,8 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.equal((await reverse(f, 5197, "_unknown_retry")).status, 200); assert.equal((await transferCreated(f)).status, 200);
       row = await booking(f.bookingId); assert.equal(row.stripe_transfer_id, "tr_test_" + f.bookingId);
       assert.equal(row.stripe_transfer_reversed_cents, 5197); assert.equal(row.payment_release_status, "reversed"); assert.equal(row.payout_failure_reason, null);
+      assert.equal((await db.query("SELECT count(*)::int AS n FROM notifications WHERE booking_id=$1 AND type='payout_released'", [f.bookingId])).rows[0].n, 0);
+      assert.ok((await db.query("SELECT completed_at FROM booking_payout_finalizations WHERE booking_id=$1", [f.bookingId])).rows[0].completed_at);
     });
     await t.test("PostgreSQL never exposes matched transfer identity without its signed reversal", { skip: !postgres }, async () => {
       const f = await unknownPayoutFixture();

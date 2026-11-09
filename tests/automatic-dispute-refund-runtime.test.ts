@@ -66,7 +66,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     "@/lib/request-security": { enforceRateLimit: async () => true, recordActivity: async () => {} },
     "@/lib/content-safety": { checkAndRecordContent: async () => ({ allowed: true }) },
     "@/lib/analytics": { recordAnalytics: async () => {} },
-    "@/lib/affiliates": { syncAffiliateCommissionForBooking: async () => {} },
+    "@/lib/affiliate-milestones": { evaluateAffiliateMilestonesForProvider: async () => {} },
     "@/lib/booking-financials": { stripeOperationKey: () => "synthetic" },
     "@/lib/booking-processing-fees": { reconcileBookingProcessingFee: async () => ({ status: "final" }) },
     "@/lib/plans": { PLAN_ENTITLEMENTS: { free: { bookingFeePercent: 10 } } },
@@ -117,13 +117,30 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
         payout_frozen_at timestamptz DEFAULT now(), payout_frozen_by text DEFAULT 'customer', payout_freeze_reason text DEFAULT 'Open booking dispute', payout_failure_reason text,
         customer_total_cents integer DEFAULT 6299, refund_requested_by text, refund_reason text, refund_requested_at timestamptz,
         stripe_charge_id text, stripe_dispute_id text, stripe_dispute_status text, stripe_dispute_closed_at timestamptz,
-        payout_released_at timestamptz, completion_confirmation_due_at timestamptz);
+        payout_released_at timestamptz, completion_confirmation_due_at timestamptz, provider_plan_snapshot text DEFAULT 'free');
       CREATE TABLE booking_disputes (id uuid PRIMARY KEY, booking_id uuid, status text DEFAULT 'open', opened_by text DEFAULT 'customer',
         against_user_id text DEFAULT 'provider', admin_note text, resolution_outcome text, resolved_at timestamptz, resolved_by text, updated_at timestamptz);
       CREATE TABLE booking_events (booking_id uuid, actor_user_id text, event_type text, message text, metadata jsonb);
       CREATE TABLE notifications (user_id text, booking_id uuid, type text, title text, message text, href text, dedupe_key text UNIQUE);
       CREATE TABLE admin_audit_log (actor_user_id text, action text, target_type text, target_id text, details jsonb);`);
-    const { refundUnreleasedBooking, releaseBookingPayout } = load("@/lib/payment-release");
+    await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+    await db.exec(`CREATE TABLE affiliate_referrals (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), affiliate_id text DEFAULT 'affiliate',
+        provider_id text DEFAULT 'provider-profile', status text DEFAULT 'listing_published', qualified_at timestamptz,
+        activation_bonus_enabled boolean DEFAULT false, revenue_share_enabled boolean DEFAULT true,
+        activation_bonus_cents integer DEFAULT 0, revenue_share_basis_points integer DEFAULT 1000,
+        revenue_share_duration_months integer DEFAULT 12, revenue_share_starts_at text DEFAULT 'first_completed_booking',
+        revenue_share_started_at timestamptz, revenue_share_ends_at timestamptz, hold_period_days integer DEFAULT 7,
+        eligible_provider_plans text[] DEFAULT '{free}', eligible_revenue_types text[] DEFAULT '{provider_marketplace_fee}', first_completed_booking_id uuid);
+      INSERT INTO affiliate_referrals DEFAULT VALUES;
+      CREATE TABLE affiliate_commissions (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), affiliate_id text, referral_id uuid, provider_id text,
+        booking_id uuid, payment_reference text, commission_type text, eligible_revenue_cents integer, amount_cents integer, status text,
+        commission_rate_basis_points integer, eligible_at timestamptz, payable_at timestamptz, reversal_reason text, updated_at timestamptz);
+      CREATE UNIQUE INDEX affiliate_commission_booking_type_key ON affiliate_commissions(booking_id,commission_type)
+        WHERE booking_id IS NOT NULL AND commission_type IN ('activation_bonus','revenue_share');
+      CREATE UNIQUE INDEX affiliate_commission_activation_referral_key ON affiliate_commissions(referral_id) WHERE commission_type='activation_bonus';
+      CREATE TABLE operations_checks(check_type text, status text, details jsonb);`);
+    const { refundUnreleasedBooking, releaseBookingPayout, releaseDuePayouts } = load("@/lib/payment-release");
+    const { finalizeBookingPayout, finalizePendingBookingPayouts } = load("@/lib/booking-payout-finalization");
     const { PATCH } = load("@/app/api/admin/issues/route");
     const { POST } = load("@/app/api/bookings/[bookingId]/refund/route");
     const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
@@ -337,13 +354,96 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       await db.query("UPDATE bookings SET refund_status='requested' WHERE id=$1", [id]); userId = "provider";
       assert.equal((await manual(id)).status, 409); assert.equal(calls.length, 0);
     });
-    for (const sql of ["INSERT INTO booking_events", "INSERT INTO notifications"]) await t.test(`known transfer survives ${sql} rollback without another transfer`, async () => {
+    for (const sql of ["INSERT INTO booking_events", "INSERT INTO affiliate_commissions", "INSERT INTO notifications", "UPDATE booking_payout_finalizations SET completed_at"]) await t.test(`known transfer survives ${sql} rollback without another transfer`, async () => {
       const { id } = await payoutFixture(); failure = sql;
-      assert.equal((await releaseBookingPayout(id, "customer")).ok, false); assert.equal(failure, "");
+      const result = await releaseBookingPayout(id, "customer"); assert.equal(result.ok, false); assert.match(result.error, /payout was sent/); assert.equal(failure, "");
       const row = await booking(id); assert.equal(row.stripe_transfer_id, "tr_test_created"); assert.equal(row.payment_release_status, "paid_out");
       assert.equal(row.payout_failure_reason, null); assert.equal(await count("booking_events", id), 0); assert.equal(await count("notifications", id), 0);
-      assert.equal((await releaseBookingPayout(id, "customer")).released, false); assert.equal(transfers.length, 1);
+      assert.equal(await count("affiliate_commissions", id), 0);
+      assert.equal((await releaseBookingPayout(id, "automatic")).released, false); assert.equal(transfers.length, 1);
+      await releaseBookingPayout(id, "admin");
+      assert.equal(await count("affiliate_commissions", id), 1); assert.equal(await count("booking_events", id), 1);
+      assert.equal(await count("notifications", id), 1);
+      assert.equal((await db.query("SELECT metadata FROM booking_events WHERE booking_id=$1", [id])).rows[0].metadata.trigger, "customer");
+      assert.ok((await db.query("SELECT completed_at FROM booking_payout_finalizations WHERE booking_id=$1", [id])).rows[0].completed_at);
       assert.equal((await full(id)).refunded, false); assert.equal(calls.length, 0);
+    });
+    await t.test("cron repairs automatic finalization with the original trigger and no new transfer", async () => {
+      const { id } = await payoutFixture(); failure = "INSERT INTO notifications";
+      assert.equal((await releaseBookingPayout(id, "automatic")).ok, false);
+      const result = await releaseDuePayouts(); assert.ok(result.finalization.finalized >= 1);
+      assert.equal(transfers.length, 1); assert.equal(await count("affiliate_commissions", id), 1);
+      assert.equal(await count("booking_events", id), 2); assert.equal(await count("notifications", id), 2);
+      await releaseDuePayouts(); assert.equal(await count("booking_events", id), 2); assert.equal(await count("notifications", id), 2);
+    });
+    await t.test("migration reruns leave historical financial snapshots and notifications untouched", async () => {
+      const { id } = await payoutFixture();
+      await db.query("UPDATE bookings SET stripe_transfer_id='tr_historic',payment_release_status='paid_out' WHERE id=$1", [id]);
+      const original = await booking(id);
+      await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+      await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+      await releaseBookingPayout(id, "automatic"); await finalizePendingBookingPayouts("test");
+      assert.deepEqual(await booking(id), original); assert.equal(await count("booking_payout_finalizations", id), 0);
+      assert.equal(await count("booking_events", id), 0); assert.equal(await count("notifications", id), 0); assert.equal(transfers.length, 0);
+    });
+    await t.test("failed transfer-evidence save retains the durable queue and recovers without resending", async () => {
+      const { id } = await payoutFixture(); failure = "UPDATE bookings SET stripe_transfer_id = COALESCE";
+      const result = await releaseBookingPayout(id, "admin"); assert.equal(result.ok, false);
+      assert.equal(result.error, BOOKING_PAYOUT_RECONCILIATION); assert.equal(failure, "");
+      const row = await booking(id); assert.equal(row.stripe_transfer_id, null); assert.equal(row.payment_release_status, "processing");
+      assert.equal(await count("booking_payout_finalizations", id), 1);
+      assert.equal(await count("affiliate_commissions", id), 0); assert.equal(await count("booking_events", id), 0);
+      assert.equal((await releaseBookingPayout(id, "automatic")).ok, false); assert.equal(transfers.length, 1);
+      await transferEvent(id); await finalizePendingBookingPayouts("test"); await releaseBookingPayout(id, "customer");
+      assert.equal(transfers.length, 1); assert.equal(await count("affiliate_commissions", id), 1);
+      assert.equal(await count("booking_events", id), 1); assert.equal(await count("notifications", id), 1);
+      assert.equal((await db.query("SELECT metadata FROM booking_events WHERE booking_id=$1", [id])).rows[0].metadata.trigger, "admin");
+    });
+    await t.test("unknown outcome stays pending until transfer evidence and then finalizes once", async () => {
+      const { id } = await payoutFixture(); transferError = new Error("Lost response");
+      await releaseBookingPayout(id, "admin"); await finalizePendingBookingPayouts("test");
+      assert.equal(await count("booking_events", id), 0); assert.equal(await count("affiliate_commissions", id), 0);
+      await transferEvent(id); await finalizeBookingPayout(id, "test"); await finalizeBookingPayout(id, "test");
+      assert.equal(transfers.length, 1); assert.equal(await count("booking_events", id), 1);
+      assert.equal(await count("affiliate_commissions", id), 1); assert.equal(await count("notifications", id), 1);
+    });
+    for (const hold of ["refund", "dispute"]) await t.test(`late finalization preserves ${hold} hold and resumes only after resolution`, async () => {
+      const { id, dispute } = await payoutFixture(); failure = "INSERT INTO notifications"; await releaseBookingPayout(id, "customer");
+      if (hold === "refund") await db.query("UPDATE bookings SET refund_status='requested' WHERE id=$1", [id]);
+      else await db.query("UPDATE booking_disputes SET status='open' WHERE id=$1", [dispute]);
+      const held = await booking(id); assert.equal(await finalizeBookingPayout(id, "test"), false);
+      assert.deepEqual(await booking(id), held); assert.equal(await count("affiliate_commissions", id), 0); assert.equal(await count("notifications", id), 0);
+      assert.equal((await db.query("SELECT completed_at FROM booking_payout_finalizations WHERE booking_id=$1", [id])).rows[0].completed_at, null);
+      await db.query("UPDATE bookings SET refund_status='none' WHERE id=$1", [id]); await db.query("UPDATE booking_disputes SET status='resolved' WHERE id=$1", [dispute]);
+      await finalizePendingBookingPayouts("test"); assert.equal(await count("affiliate_commissions", id), 1);
+      assert.equal(await count("booking_events", id), 1); assert.equal(await count("notifications", id), 1); assert.equal(transfers.length, 1);
+    });
+    for (const terminal of ["refunded", "reversed", "lost"]) await t.test(`late finalization after ${terminal} cannot restore earnings or success notifications`, async () => {
+      const { id } = await payoutFixture(); failure = "INSERT INTO notifications"; await releaseBookingPayout(id, "automatic");
+      if (terminal === "refunded") await db.query("UPDATE bookings SET payment_status='refunded',refunded_amount_cents=6000,customer_service_fee_refunded_cents=299 WHERE id=$1", [id]);
+      if (terminal === "reversed") await db.query("UPDATE bookings SET payment_release_status='reversed',stripe_transfer_reversed_cents=5197 WHERE id=$1", [id]);
+      if (terminal === "lost") await db.query("UPDATE bookings SET stripe_dispute_status='lost',payment_release_status='frozen',payout_frozen_at=now() WHERE id=$1", [id]);
+      const held = await booking(id); assert.equal(await finalizeBookingPayout(id, "test"), true);
+      assert.deepEqual(await booking(id), held); assert.equal(await count("affiliate_commissions", id), 0); assert.equal(await count("notifications", id), 0);
+      assert.equal(await count("booking_events", id), 1); assert.equal(transfers.length, 1);
+    });
+    await t.test("new partial refund suppresses a stale success message but keeps adjusted commission", async () => {
+      const { id } = await payoutFixture(); failure = "INSERT INTO notifications"; await releaseBookingPayout(id, "automatic");
+      await db.query("UPDATE bookings SET refunded_amount_cents=3000,stripe_transfer_reversed_cents=2600,payment_release_status='partially_released' WHERE id=$1", [id]);
+      await finalizeBookingPayout(id, "test"); assert.equal(await count("notifications", id), 0);
+      assert.equal(await count("booking_events", id), 1); assert.equal(await count("affiliate_commissions", id), 1);
+      assert.equal((await db.query("SELECT amount_cents FROM affiliate_commissions WHERE booking_id=$1", [id])).rows[0].amount_cents, 30);
+    });
+    await t.test("a mode mismatch cannot finalize another environment's payout", async () => {
+      const { id } = await payoutFixture(); failure = "INSERT INTO notifications"; await releaseBookingPayout(id, "customer");
+      assert.equal(await finalizeBookingPayout(id, "live"), false); assert.equal(await count("notifications", id), 0);
+      assert.equal(await count("affiliate_commissions", id), 0); assert.equal(await count("booking_events", id), 0);
+    });
+    await t.test("concurrent retry, webhook finalizer and cron serialize on the booking row", { skip: !postgres }, async () => {
+      const { id } = await payoutFixture(); failure = "INSERT INTO notifications"; await releaseBookingPayout(id, "automatic");
+      await Promise.all([releaseBookingPayout(id, "admin"), finalizeBookingPayout(id, "test"), finalizePendingBookingPayouts("test")]);
+      assert.equal(transfers.length, 1); assert.equal(await count("affiliate_commissions", id), 1);
+      assert.equal(await count("booking_events", id), 2); assert.equal(await count("notifications", id), 2);
     });
     await t.test("lost transfer response followed by full refund preserves principal for delayed transfer evidence", async () => {
       const { id } = await payoutFixture(); transferError = new Error("Lost transfer response"); await releaseBookingPayout(id, "customer");

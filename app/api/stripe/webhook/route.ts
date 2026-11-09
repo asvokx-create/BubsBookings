@@ -1,5 +1,6 @@
 import { recordBookingChargeRefund } from "@/lib/booking-refund-reconciliation";
 import { recordBookingPayoutTransfer } from "@/lib/booking-payout-reconciliation";
+import { finalizeBookingPayout } from "@/lib/booking-payout-finalization";
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { database } from "@/lib/database";
@@ -300,9 +301,12 @@ async function recordTransferCreated(transfer: Stripe.Transfer) {
   }
   const bookingId = transfer.metadata?.bookingId;
   if (!bookingId || transfer.metadata.kind !== "provider_payout") return;
-  await recordBookingPayoutTransfer({ bookingId, transferId: transfer.id, mode: getStripeMode(), amountCents: transfer.amount,
+  const recorded = await recordBookingPayoutTransfer({ bookingId, transferId: transfer.id, mode: getStripeMode(), amountCents: transfer.amount,
     connectedAccountId: typeof transfer.destination === "string" ? transfer.destination : transfer.destination?.id ?? "",
     sourceChargeId: idOf(transfer.source_transaction) });
+  // Transfer evidence is durable before failure-prone follow-up work. A webhook
+  // retry or the payout cron can complete the same pending finalization.
+  if (recorded.rowCount) await finalizeBookingPayout(bookingId, getStripeMode());
 }
 
 async function recordTransferReversed(transfer: Stripe.Transfer) {
@@ -359,6 +363,7 @@ async function recordTransferReversed(transfer: Stripe.Transfer) {
   } finally {
     client.release();
   }
+  await finalizeBookingPayout(bookingId, getStripeMode());
 }
 
 async function recordPayoutFailed(event: Stripe.Event, payout: Stripe.Payout) {
