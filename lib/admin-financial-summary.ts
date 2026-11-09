@@ -11,7 +11,12 @@ export async function getAdminFinancialSummary() {
       )::bigint)
       + GREATEST(0, b.customer_service_fee_cents - b.customer_service_fee_refunded_cents)
       - CASE WHEN b.processing_fee_status = 'final'
-        THEN GREATEST(0, COALESCE(b.stripe_processing_fee_cents, 0) - b.provider_processing_fee_cents)
+        THEN GREATEST(0, COALESCE(b.stripe_processing_fee_cents, 0)
+          -- A full service refund returns the entire net provider payout (or
+          -- cancels it before release). Its original processing allocation is
+          -- no longer income: the platform bears the unrecovered Stripe fee.
+          - CASE WHEN b.refunded_amount_cents >= b.price_cents
+            THEN 0 ELSE b.provider_processing_fee_cents END)
         ELSE 0 END
     ), 0)::bigint AS platform_revenue_cents
     FROM bookings b
