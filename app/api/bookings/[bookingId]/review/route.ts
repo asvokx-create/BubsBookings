@@ -32,6 +32,7 @@ export async function POST(request: Request, context: RouteContext<"/api/booking
        JOIN provider_profiles p ON p.id = b.provider_id
        JOIN services s ON s.id = b.service_id
        WHERE b.id::text = $1 AND b.customer_id = $2 AND b.status = 'completed'
+         AND (b.payment_status IN ('paid','refunded') OR NOT EXISTS (SELECT 1 FROM hourly_projects project WHERE project.payment_booking_id=b.id))
        FOR UPDATE OF b`,
       [bookingId, session.user.id],
     );

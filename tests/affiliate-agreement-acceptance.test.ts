@@ -8,7 +8,7 @@ import { AFFILIATE_LEGAL_DOCUMENT_LIST } from "../lib/legal-document-versions.ts
 
 const CANONICAL_LEGAL_SOURCE_HASHES: Record<string, string> = {
   partner_agreement: "978d5acf7b38e979776543f0d36fa1e3f646a0b2443872732471c9c0cc076cf5",
-  terms_of_service: "414a77ed8020569f48b841b00dfa068d6ee1afc4946c5bdba354cd08146286ab",
+  terms_of_service: "359e79bf05f1d1472524fbd302a0691ba2a62edc98c3cdc8c5410aea6876f82e",
   privacy_policy: "8fc46237c8ec6a63ee0124970dc813e6ac94d771577763117b422adc339aeedb",
 };
 

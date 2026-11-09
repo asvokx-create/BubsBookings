@@ -37,7 +37,7 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
     const claimed = await client.query<{
       id: string; customer_id: string; provider_user_id: string; provider_name: string; service_title: string;
       provider_payout_cents: number; stripe_account_id: string | null; stripe_charge_id: string | null;
-      stripe_mode: "test" | "live" | null;
+      stripe_mode: "test" | "live" | null; refunded_amount_cents: number; customer_service_fee_refunded_cents: number; customer_total_cents: number;
     }>(`UPDATE bookings b SET payment_release_status = 'processing', payout_failure_reason = NULL
         FROM provider_profiles p, services s
         WHERE b.id::text = $1 AND p.id = b.provider_id AND s.id = b.service_id
@@ -53,7 +53,8 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
           )
         RETURNING b.id::text, b.customer_id, p.user_id AS provider_user_id,
           s.business_name AS provider_name, s.title AS service_title,
-          b.provider_payout_cents, p.stripe_account_id, b.stripe_charge_id, b.stripe_mode`,
+          b.provider_payout_cents, p.stripe_account_id, b.stripe_charge_id, b.stripe_mode,
+          b.refunded_amount_cents,b.customer_service_fee_refunded_cents,b.customer_total_cents`,
       [bookingId, getStripeMode()]);
     const booking = claimed.rows[0];
     if (!booking) {
@@ -71,6 +72,15 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
       return { ok: false, error: "The provider payout details are incomplete." };
     }
 
+    // Stripe dashboard refunds can precede their webhook. Check while holding
+    // the payout row lock, and never transfer unreconciled customer funds.
+    const charge = await getStripe().charges.retrieve(booking.stripe_charge_id);
+    if (charge.currency !== "usd" || charge.amount !== booking.customer_total_cents || charge.amount_refunded > booking.refunded_amount_cents + booking.customer_service_fee_refunded_cents || charge.refunded) {
+      await client.query(`UPDATE bookings SET payment_release_status='frozen',payout_frozen_at=COALESCE(payout_frozen_at,now()),
+        payout_freeze_reason='Stripe refund requires payout reconciliation',payout_failure_reason='Review the Stripe charge and reconcile the refund before releasing this payout.' WHERE id::text=$1`,[bookingId]);
+      await client.query("COMMIT");
+      return {ok:false,error:"This payment needs refund reconciliation before payout."};
+    }
     let transfer;
     try {
       transfer = await getStripe().transfers.create({
@@ -92,7 +102,7 @@ export async function releaseBookingPayout(bookingId: string, trigger: "customer
       payout_released_at = now(), payout_failure_reason = NULL WHERE id::text = $1`, [bookingId, transfer.id]);
     await syncAffiliateCommissionForBooking(bookingId, client);
     await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
-      VALUES ($1::uuid, 'payout_released', $2, jsonb_build_object('transferId', $3, 'trigger', $4))`,
+      VALUES ($1::uuid, 'payout_released', $2, jsonb_build_object('transferId', $3::text, 'trigger', $4::text))`,
       [bookingId, `Provider payout of $${(booking.provider_payout_cents / 100).toFixed(2)} was released through Stripe.`, transfer.id, trigger]);
     if (trigger === "automatic") {
       await client.query(`INSERT INTO booking_events (booking_id, event_type, message)

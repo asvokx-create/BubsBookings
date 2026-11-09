@@ -13,7 +13,7 @@ export const AFFILIATE_LEGAL_DOCUMENTS = {
     version: POLICY_VERSION,
     publicPath: "/terms",
     sourcePath: "app/terms/page.tsx",
-    contentHash: "d51452e04d17ea7b1d0213a045bdae0671f0eaaf655c26d571d842d933a2cdd3",
+    contentHash: "359e79bf05f1d1472524fbd302a0691ba2a62edc98c3cdc8c5410aea6876f82e",
   },
   privacyPolicy: {
     key: "privacy_policy",

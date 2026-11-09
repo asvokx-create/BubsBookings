@@ -10,7 +10,7 @@ test("provider dashboard navigation uses matching, consistent icons for every se
   const dashboard = read("components", "provider-dashboard.tsx");
   const icons = read("components", "provider-dashboard-icon.tsx");
   const sharedIcons = read("components", "ui-icon.tsx");
-  const sectionNames = ["overview", "bookings", "opportunities", "calendar", "messages", "revenue", "services", "profile", "marketing", "locations", "availability", "reviews", "team", "billing", "settings"];
+  const sectionNames = ["projects", "overview", "bookings", "opportunities", "calendar", "messages", "revenue", "services", "profile", "marketing", "locations", "availability", "reviews", "team", "billing", "settings"];
 
   for (const section of sectionNames) {
     assert.match(dashboard, new RegExp(`section: "${section}"`));

@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
+import HourlyProjectRequest from "@/components/hourly-project-request";
 import BookingDatePicker from "@/components/booking-date-picker";
 import CustomSelect from "@/components/custom-select";
 import type { ServiceDeliveryType } from "@/lib/service-delivery";
@@ -60,7 +61,12 @@ async function responseJson<T>(response: Response | null) {
   return response.json().catch(() => null) as Promise<T | null>;
 }
 
-export default function BookingCard({ serviceId, price, duration, pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes, serviceTitle, provider, serviceCity, serviceState, isSignedIn, returnPath, cancellationPolicy, cancellationWindowHours, noShowPolicy, bookingQuestions, bookingDisabled = false, parentBookingId = "", requestAnotherTimeHref, deliveryType, packages, addOns, recurrenceOptions, serviceKind, preparationNotes }: BookingCardProps) {
+export default function BookingCard(props: BookingCardProps) {
+  if (props.pricingType === "HOURLY") return <HourlyProjectRequest {...props} />;
+  return <ScheduledBookingCard {...props} />;
+}
+
+function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes, serviceTitle, provider, serviceCity, serviceState, isSignedIn, returnPath, cancellationPolicy, cancellationWindowHours, noShowPolicy, bookingQuestions, bookingDisabled = false, parentBookingId = "", requestAnotherTimeHref, deliveryType, packages, addOns, recurrenceOptions, serviceKind, preparationNotes }: BookingCardProps) {
   const quoteOnly = pricingType === "QUOTE_ONLY";
   const [deliveryMethod, setDeliveryMethod] = useState<"IN_PERSON" | "REMOTE" | "">(deliveryType === "BOTH" ? "" : deliveryType);
   const [addressLine1, setAddressLine1] = useState("");

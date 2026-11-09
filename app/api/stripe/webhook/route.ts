@@ -1,3 +1,4 @@
+import { recordBookingChargeRefund } from "@/lib/booking-refund-reconciliation";
 import { NextResponse } from "next/server";
 import type Stripe from "stripe";
 import { database } from "@/lib/database";
@@ -30,6 +31,8 @@ async function markBookingPaymentFailed(options: {
   const failed = await database.query<{ id: string; recurring_series_id: string | null; customer_id: string }>(
     `UPDATE bookings SET payment_status = 'failed'
      WHERE stripe_mode = $4 AND payment_status IN ('unpaid', 'pending', 'failed')
+       AND (NOT EXISTS (SELECT 1 FROM hourly_projects h WHERE h.payment_booking_id=bookings.id)
+         OR ($2::text <> '' AND stripe_checkout_session_id=$2))
        AND (($1::text <> '' AND id::text = $1)
          OR ($2::text <> '' AND stripe_checkout_session_id = $2)
          OR ($3::text <> '' AND stripe_payment_intent_id = $3))
@@ -159,6 +162,17 @@ async function notifyTrialWillEnd(subscription: Stripe.Subscription) {
 
 async function markBookingPaid(checkout: Stripe.Checkout.Session) {
   if (checkout.metadata?.kind !== "booking_payment" || !checkout.metadata.bookingId) return;
+  if (checkout.payment_status !== "paid") return;
+  // A signed event can beat the response that persists its Checkout Session.
+  // Retry rather than acknowledge and permanently lose that payment.
+  if (checkout.metadata.hourlyProjectId) {
+    const linked = await database.query<{ status: string; version: number; stripe_checkout_session_id: string | null }>(`SELECT h.status,h.version,b.stripe_checkout_session_id
+      FROM hourly_projects h JOIN bookings b ON b.id=h.payment_booking_id
+      WHERE h.id::text=$1 AND b.id::text=$2`, [checkout.metadata.hourlyProjectId,checkout.metadata.bookingId]);
+    const project = linked.rows[0];
+    if (!project || project.status !== "approved" || String(project.version) !== checkout.metadata.timesheetVersion
+      || project.stripe_checkout_session_id !== checkout.id) throw new Error("Hourly payment approval/session is not yet reconciled.");
+  }
   const paymentIntentId = idOf(checkout.payment_intent);
   if (!paymentIntentId || checkout.amount_total === null) {
     throw new Error("Stripe booking payment was missing its payment details.");
@@ -670,15 +684,8 @@ async function processEvent(event: Stripe.Event) {
       const bookingId = paymentIntent?.metadata.kind === "booking_payment"
         ? paymentIntent.metadata.bookingId ?? ""
         : "";
-      const refunded = await database.query<{ id: string }>(`UPDATE bookings SET
-        payment_status = CASE WHEN $3 THEN 'refunded' ELSE payment_status END,
-        refund_status = 'refunded',
-        refunded_amount_cents = LEAST(price_cents, $4),
-        customer_service_fee_refunded_cents = LEAST(customer_service_fee_cents, GREATEST($4 - price_cents, 0)),
-        refunded_at = now()
-        WHERE stripe_mode = $2 AND customer_total_cents = $6
-          AND (stripe_payment_intent_id = $1 OR ($5 <> '' AND id::text = $5))
-        RETURNING id::text`, [paymentIntentId, getStripeMode(), charge.refunded, charge.amount_refunded, bookingId, charge.amount]);
+      const refunded = await recordBookingChargeRefund({ paymentIntentId, mode: getStripeMode(), fullyRefunded: charge.refunded,
+        amountRefunded: charge.amount_refunded, bookingId, chargeAmount: charge.amount });
       for (const booking of refunded.rows) await syncAffiliateCommissionForBooking(booking.id);
       await recordTipRefund(charge);
       break;

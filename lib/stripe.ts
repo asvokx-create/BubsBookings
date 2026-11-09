@@ -1,6 +1,7 @@
 import "server-only";
 
 import Stripe from "stripe";
+import { stripeKeyMode } from "./stripe-mode";
 let stripeClient: Stripe | null = null;
 
 export function getStripe() {
@@ -11,7 +12,7 @@ export function getStripe() {
 }
 
 export function getStripeMode(): "test" | "live" {
-  return process.env.STRIPE_SECRET_KEY?.startsWith("sk_live_") ? "live" : "test";
+  return stripeKeyMode(process.env.STRIPE_SECRET_KEY);
 }
 
 export function stripeConfiguration() {

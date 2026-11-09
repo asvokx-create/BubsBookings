@@ -52,6 +52,12 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Resolve active bookings, open disputes, and unsettled payments before deleting this account." }, { status: 409 });
   }
 
+  // Project time/payment evidence belongs to both parties. Do not delete Stripe
+  // resources and then fail on its retained foreign keys; reconcile via support.
+  const projectRecords = await database.query(`SELECT 1 FROM hourly_projects project JOIN provider_profiles provider ON provider.id=project.provider_id
+    WHERE project.customer_id=$1 OR provider.user_id=$1 LIMIT 1`, [session.user.id]);
+  if (projectRecords.rowCount) return NextResponse.json({ error: "This account has hourly-project records shared with another participant. Contact support to reconcile any remaining work or payments and complete account deletion safely." }, { status: 409 });
+
   const settingsResult = await database.query<{ consumer_stripe_customer_id: string | null; consumer_stripe_mode: "test" | "live" | null; profile_image_key: string | null }>(
     "SELECT consumer_stripe_customer_id, consumer_stripe_mode, profile_image_key FROM user_settings WHERE user_id = $1",
     [session.user.id],

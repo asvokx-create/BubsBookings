@@ -35,7 +35,7 @@ export default function AccountNav() {
           <ProfileAvatar name={name} imageUrl={session.user.image} className="h-8 w-8 text-xs" />
           <span className="hidden sm:inline">My account</span>
         </Link>
-        <NotificationBell />
+        <Link href="/account/projects" className="hidden rounded-full px-3 py-2 text-sm font-bold md:inline-flex">Projects</Link><NotificationBell />
       </div>
     );
   }
