@@ -76,7 +76,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     "@/lib/database": { database },
     "@/lib/stripe": { getStripe: () => stripe, getStripeMode: () => "test", isStripeReady: () => true },
     // These other webhook paths are not part of booking-payment settlement.
-    "@/lib/booking-refund-reconciliation": {}, "@/lib/provider-verification": {},
+    "@/lib/provider-verification": {},
     "@/lib/email": {}, "@/lib/affiliates": {}, "@/lib/affiliate-payouts": {},
     "@/lib/tip-payments": {}, "@/lib/provider-age-verification": {},
   };
@@ -106,11 +106,12 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       ADD stripe_payment_intent_id text, ADD stripe_charge_id text, ADD stripe_mode text DEFAULT 'test',
       ADD paid_at timestamptz, ADD payment_flow text DEFAULT 'held_transfer_v1', ADD payment_release_status text DEFAULT 'awaiting_payment',
       ADD payout_frozen_at timestamptz, ADD payout_freeze_reason text, ADD completion_confirmation_due_at timestamptz,
-      ADD payout_released_at timestamptz, ADD stripe_transfer_id text, ADD customer_total_cents integer DEFAULT 6299,
+      ADD payout_released_at timestamptz, ADD stripe_transfer_id text, ADD stripe_transfer_reversed_cents integer DEFAULT 0, ADD payout_failure_reason text, ADD customer_total_cents integer DEFAULT 6299,
       ADD platform_fee_cents integer DEFAULT 600, ADD stripe_processing_fee_cents integer,
       ADD provider_processing_fee_cents integer DEFAULT 0, ADD provider_payout_cents integer DEFAULT 5400,
       ADD processing_fee_status text DEFAULT 'pending', ADD refunded_amount_cents integer DEFAULT 0,
-      ADD customer_service_fee_refunded_cents integer DEFAULT 0, ADD refund_status text DEFAULT 'none';
+      ADD customer_service_fee_refunded_cents integer DEFAULT 0, ADD customer_service_fee_cents integer DEFAULT 299,
+      ADD refund_status text DEFAULT 'none', ADD refund_failure_reason text, ADD refunded_at timestamptz;
       CREATE TABLE booking_events (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), booking_id uuid REFERENCES bookings(id), event_type text, message text, metadata jsonb);
       CREATE TABLE notifications (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), user_id text REFERENCES "user"(id), booking_id uuid REFERENCES bookings(id), type text, title text, message text, href text, dedupe_key text UNIQUE);
       CREATE TABLE analytics_events (event_name text, user_id text, anonymous_id text, path text, target_type text, target_id text, metadata jsonb);
@@ -119,6 +120,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       INSERT INTO services (id,provider_id,slug,category,title,description,price_cents,duration_minutes) VALUES ('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','repair','repair','Repair','Repair service',6000,60);`);
     await db.exec(readFileSync("database/migrations/111_hourly_projects.sql", "utf8"));
     const { POST } = load("@/app/api/stripe/webhook/route") as { POST: (request: Request) => Promise<Response> };
+    const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
     const fixture = async (hourly = true) => {
       const bookingId = randomUUID();
       const projectId = randomUUID();
@@ -267,6 +269,75 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.equal((await booking(f.bookingId)).processing_fee_status, "pending");
       assert.equal(await count("booking_events", "booking_id", f.bookingId), 1);
       assert.equal(await count("notifications", "booking_id", f.bookingId), 2);
+    });
+
+    const transferFixture = async () => {
+      const f = await fixture(false); assert.equal((await send(f)).status, 200);
+      await db.query("UPDATE bookings SET stripe_transfer_id=$2, payment_release_status='paid_out', payout_failure_reason='Transfer recovery needs review' WHERE id=$1", [f.bookingId, "tr_test_" + f.bookingId]);
+      return f;
+    };
+    const reverse = async (f: Awaited<ReturnType<typeof fixture>>, amountReversed: number, suffix: string, options: { transferId?: string; livemode?: boolean } = {}) => {
+      const payload = JSON.stringify({ id: f.eventId + suffix, object: "event", type: "transfer.reversed", livemode: options.livemode ?? false,
+        created: Math.floor(Date.now() / 1000), data: { object: { id: options.transferId ?? "tr_test_" + f.bookingId,
+          object: "transfer", amount: 5197, amount_reversed: amountReversed, metadata: { bookingId: f.bookingId } } } });
+      return POST(new Request("http://localhost/api/stripe/webhook", { method: "POST", headers: { "stripe-signature": signatureTools.generateTestHeaderString({ payload, secret: webhookSecret }) }, body: payload }));
+    };
+    const reversalEvents = async (id: string) => (await db.query("SELECT * FROM booking_events WHERE booking_id=$1 AND event_type='transfer_reversed'", [id])).rows;
+
+    await t.test("original untyped transfer reversal subtraction reproduces PostgreSQL ambiguous operator", async () => {
+      const f = await transferFixture();
+      await assert.rejects(db.query(`UPDATE bookings SET
+        payment_release_status = CASE WHEN $3 THEN 'reversed' ELSE 'partially_released' END,
+        provider_payout_cents = GREATEST(0, $4 - $5),
+        payout_failure_reason = CASE WHEN $3 THEN 'The provider transfer was reversed through Stripe.' ELSE 'Part of the provider transfer was reversed through Stripe.' END
+        WHERE id::text = $1 AND stripe_transfer_id = $2 AND stripe_mode = $6`,
+      [f.bookingId, "tr_test_" + f.bookingId, true, 5197, 5197, "test"]), { code: "42725" });
+    });
+
+    await t.test("signed transfer reversals retain original principal and monotonic recovery across duplicate/out-of-order events", async () => {
+      const f = await transferFixture();
+      // Repair the old handler's net-payout representation using the signed original amount.
+      await db.query("UPDATE bookings SET provider_payout_cents=3197 WHERE id=$1", [f.bookingId]);
+      assert.equal((await reverse(f, 2000, "_partial")).status, 200);
+      let row = await booking(f.bookingId); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 2000);
+      assert.equal(row.provider_payout_cents - row.stripe_transfer_reversed_cents, 3197); assert.equal(row.payment_release_status, "partially_released");
+      assert.equal(row.payout_failure_reason, "Transfer recovery needs review");
+      assert.equal((await reverse(f, 2000, "_partial")).status, 200);
+      assert.equal((await reverse(f, 2000, "_duplicate")).status, 200); assert.equal((await reversalEvents(f.bookingId)).length, 1);
+      assert.equal((await reverse(f, 5197, "_full")).status, 200);
+      assert.equal((await reverse(f, 2000, "_stale")).status, 200);
+      assert.equal((await reverse(f, 5197, "_full_duplicate")).status, 200);
+      row = await booking(f.bookingId); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 5197);
+      assert.equal(row.payment_release_status, "reversed"); assert.equal(row.payout_failure_reason, null);
+      assert.equal((await reversalEvents(f.bookingId)).length, 2);
+    });
+    await t.test("transfer reversal audit failure rolls back financial fields and retries once", async () => {
+      const f = await transferFixture(); failures.push("'transfer_reversed'");
+      assert.equal((await reverse(f, 5197, "_retry")).status, 500); assert.equal(failures.length, 0);
+      const row = await booking(f.bookingId); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 0);
+      assert.equal(row.payment_release_status, "paid_out"); assert.equal(row.payout_failure_reason, "Transfer recovery needs review");
+      assert.equal((await reversalEvents(f.bookingId)).length, 0);
+      assert.equal((await reverse(f, 5197, "_retry")).status, 200); assert.equal((await reverse(f, 5197, "_another")).status, 200);
+      assert.equal((await booking(f.bookingId)).stripe_transfer_reversed_cents, 5197); assert.equal((await reversalEvents(f.bookingId)).length, 1);
+    });
+    await t.test("signed full transfer reversal before charge-refund reconciliation does not recreate recovery warning", async () => {
+      const f = await transferFixture(); assert.equal((await reverse(f, 5197, "_first")).status, 200);
+      await recordBookingChargeRefund({ bookingId: f.bookingId, paymentIntentId: f.checkout.payment_intent, mode: "test", fullyRefunded: true, amountRefunded: 6299, chargeAmount: 6299 });
+      const row = await booking(f.bookingId); assert.equal(row.payout_failure_reason, null); assert.equal(row.payment_release_status, "reversed");
+      assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 5197);
+    });
+    await t.test("unmatched transfer and wrong-mode reversal cannot change state or record audit", async () => {
+      const f = await transferFixture();
+      assert.equal((await reverse(f, 5197, "_wrong_transfer", { transferId: "tr_test_unrelated" })).status, 200);
+      assert.equal((await reverse(f, 5197, "_wrong_mode", { livemode: true })).status, 400);
+      assert.equal((await booking(f.bookingId)).stripe_transfer_reversed_cents, 0);
+      assert.equal((await booking(f.bookingId)).payment_release_status, "paid_out"); assert.equal((await reversalEvents(f.bookingId)).length, 0);
+    });
+    await t.test("concurrent distinct signed reversal events record one audit under PostgreSQL row lock", { skip: !postgres }, async () => {
+      const f = await transferFixture();
+      const results = await Promise.all([reverse(f, 5197, "_concurrent_a"), reverse(f, 5197, "_concurrent_b")]);
+      assert.deepEqual(results.map((response) => response.status), [200, 200]);
+      assert.equal((await reversalEvents(f.bookingId)).length, 1); assert.equal((await booking(f.bookingId)).stripe_transfer_reversed_cents, 5197);
     });
 
     await t.test("all webhook booking-event JSON queries execute with typed parameters", async () => {

@@ -323,19 +323,39 @@ async function recordTransferReversed(transfer: Stripe.Transfer) {
   }
   const bookingId = transfer.metadata?.bookingId;
   if (!bookingId) return;
+  if (!Number.isSafeInteger(transfer.amount) || transfer.amount <= 0
+    || !Number.isSafeInteger(transfer.amount_reversed) || transfer.amount_reversed < 0
+    || transfer.amount_reversed > transfer.amount) return;
   const fullyReversed = transfer.amount_reversed >= transfer.amount;
-  await database.query(`UPDATE bookings SET
-      payment_release_status = CASE WHEN $3 THEN 'reversed' ELSE 'partially_released' END,
-      provider_payout_cents = GREATEST(0, $4 - $5),
-      payout_failure_reason = CASE WHEN $3 THEN 'The provider transfer was reversed through Stripe.'
-        ELSE 'Part of the provider transfer was reversed through Stripe.' END
-    WHERE id::text = $1 AND stripe_transfer_id = $2 AND stripe_mode = $6`,
-    [bookingId, transfer.id, fullyReversed, transfer.amount, transfer.amount_reversed, getStripeMode()]);
-  await database.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
-    SELECT $1::uuid, 'transfer_reversed', $2, jsonb_build_object('transferId', $3::text, 'amountReversed', $4::integer)
-    WHERE NOT EXISTS (SELECT 1 FROM booking_events WHERE booking_id = $1::uuid AND event_type = 'transfer_reversed'
-      AND metadata->>'transferId' = $3 AND (metadata->>'amountReversed')::integer = $4::integer)`,
-    [bookingId, fullyReversed ? "The provider transfer was fully reversed." : "The provider transfer was partially reversed.", transfer.id, transfer.amount_reversed]);
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    // Keep the original transfer principal separate from cumulative recovery.
+    // The guarded UPDATE holds a row lock until its audit entry commits, so
+    // duplicate events cannot double-record and older snapshots cannot regress.
+    const updated = await client.query(`UPDATE bookings SET
+        payment_release_status = CASE WHEN $3 THEN 'reversed'
+          WHEN payment_release_status = 'frozen' THEN 'frozen' ELSE 'partially_released' END,
+        provider_payout_cents = $4::integer,
+        stripe_transfer_reversed_cents = GREATEST(stripe_transfer_reversed_cents, $5::integer),
+        payout_failure_reason = CASE WHEN $3 THEN NULL ELSE payout_failure_reason END
+      WHERE id::text = $1 AND stripe_transfer_id = $2 AND stripe_mode = $6
+        AND stripe_transfer_reversed_cents <= $5::integer
+      RETURNING id`, [bookingId, transfer.id, fullyReversed, transfer.amount, transfer.amount_reversed, getStripeMode()]);
+    if (updated.rowCount) {
+      await client.query(`INSERT INTO booking_events (booking_id, event_type, message, metadata)
+        SELECT $1::uuid, 'transfer_reversed', $2, jsonb_build_object('transferId', $3::text, 'amountReversed', $4::integer)
+        WHERE NOT EXISTS (SELECT 1 FROM booking_events WHERE booking_id = $1::uuid AND event_type = 'transfer_reversed'
+          AND metadata->>'transferId' = $3 AND (metadata->>'amountReversed')::integer = $4::integer)`,
+      [bookingId, fullyReversed ? "The provider transfer was fully reversed." : "The provider transfer was partially reversed.", transfer.id, transfer.amount_reversed]);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function recordPayoutFailed(event: Stripe.Event, payout: Stripe.Payout) {

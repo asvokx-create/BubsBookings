@@ -2,11 +2,14 @@ import "server-only";
 import { database } from "./database";
 
 /** Signed charge events report cumulative refunds. Never regress totals when
- * events arrive out of order, or release an unreconciled external refund. */
+ * events arrive out of order, or release an unreconciled external refund.
+ * Only full-charge settlement proves an outstanding refund warning is obsolete;
+ * partial totals do not identify which pending operation completed. */
 export async function recordBookingChargeRefund(input: { paymentIntentId: string | null; bookingId: string; mode: "test" | "live"; fullyRefunded: boolean; amountRefunded: number; chargeAmount: number }) {
   return database.query<{id:string}>(`UPDATE bookings SET
     payment_status = CASE WHEN $3 THEN 'refunded' ELSE payment_status END,
     refund_status = 'refunded',
+    refund_failure_reason = CASE WHEN $3 AND $4 >= customer_total_cents THEN NULL ELSE refund_failure_reason END,
     payout_frozen_at = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL
       AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents THEN COALESCE(payout_frozen_at,now()) ELSE payout_frozen_at END,
     payout_freeze_reason = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL
@@ -19,6 +22,7 @@ export async function recordBookingChargeRefund(input: { paymentIntentId: string
       ELSE payment_release_status END,
     provider_payout_cents = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NULL AND $3 THEN 0 ELSE provider_payout_cents END,
     payout_failure_reason = CASE WHEN payment_flow='held_transfer_v1' AND stripe_transfer_id IS NOT NULL
+      AND stripe_transfer_reversed_cents < provider_payout_cents
       AND $4 > refunded_amount_cents + customer_service_fee_refunded_cents THEN 'Stripe refund after provider payout requires transfer recovery review.' ELSE payout_failure_reason END,
     refunded_amount_cents = GREATEST(refunded_amount_cents,LEAST(price_cents,$4)),
     customer_service_fee_refunded_cents = GREATEST(customer_service_fee_refunded_cents,LEAST(customer_service_fee_cents,GREATEST($4-price_cents,0))),

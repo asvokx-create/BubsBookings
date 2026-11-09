@@ -40,6 +40,10 @@ Qualify existing prepaid-hourly paragraphs as applying to legacy bookings only. 
 
 An unresolved Stripe request older than the safe idempotency window is held for support review rather than assigned a new payment attempt. Operators must reconcile the original Stripe session before allowing a new charge. No manually marking a project paid.
 
+## Refund reconciliation safeguards
+
+A Stripe approval requirement, pending refund, or uncertain network outcome stays blocked for reconciliation rather than becoming retryable. An approved Stripe request may execute later. Operators must verify the original Stripe refund before retrying; rejected or expired approval requests also require review. Signed cumulative refund and transfer-reversal events must not reduce recorded totals or clear unrelated payout holds. A successful customer refund does not prove that an already-paid provider transfer was recovered.
+
 ## Account data handling
 
 Account exports include project records, time entries, and history while preserving preacceptance address redaction. Self-service account deletion is blocked before any external Stripe deletion if hourly-project records exist; support must reconcile shared work/payment evidence and handle deletion safely. A full automated retention/anonymization workflow is not part of this release.
@@ -52,7 +56,7 @@ These results cover an isolated local app, disposable synthetic accounts, and th
 
 ### Verified
 
-- CI for commit `2f79ee0` completed with 649 passing tests and zero skipped tests. The subsequent refund-hardening change passed 661 local tests with four real-PostgreSQL opt-ins skipped; its exact-commit PostgreSQL CI remains required. Independent review found no remaining blocker in that patch.
+- CI for commit `1c23967`, including the refund-hardening change and real PostgreSQL coverage, completed with 701 passing tests and zero skipped tests. The subsequent display and transfer-reconciliation fixes passed 671 local tests with five PostgreSQL-only skips; exact-commit CI is still required.
 - A one-minute project at $60/hour produced a single $3.99 Checkout: $1.00 labor plus the $2.99 customer service fee.
 - Concurrent and repeated Checkout requests reused one session and one settlement. Checkout cancellation did not record payment; resuming the same session allowed payment. After payment, a new Checkout request returned 409 without creating another attempt.
 - Hosted Checkout disabled payment submission while processing. Reloading or revisiting the completed session did not offer another payment.
@@ -61,15 +65,17 @@ These results cover an isolated local app, disposable synthetic accounts, and th
 - The supported customer completion action reconciled the first payment's actual processing fee from pending to final: 42 cents total Stripe processing cost, 11 cents allocated to the provider, 10 cents platform fee, and a 79-cent provider transfer. Repeating completion retained the same transfer and exactly one payout event.
 - Public desktop (1536-pixel) and mobile (390-pixel) layouts passed the public-copy and horizontal-overflow checks. New hourly cards describe tracked projects rather than a legacy minimum purchase; the listing explains corrections, final approval, and payment.
 
-### Pending refund reconciliation
+### Refund reconciliation and remaining recovery
 
-Both synthetic refund requests received Stripe `approval_required` responses. These are pending external human review, not evidence of missing key permissions or definitively failed refunds. Stripe states that approval can execute the requested action automatically. Neither refund was retried.
+Both synthetic refund requests initially returned Stripe `approval_required`, requiring external human review rather than a permission change. Following user approval, signed refund webhooks confirmed both full $3.99 refunds: $1.00 labor and the $2.99 service fee each. Neither original refund was retried.
 
-The current local records still show failed refund status from the pre-hardening code and must not be treated as authoritative proof that no refund can occur. Reconcile the original requests and subsequent Stripe events before any further refund attempt. The first payment already transferred 79 cents; recovery of that transfer requires review after refund approval. The second payment has no provider transfer and is locally frozen following the refund request. Do not manually alter financial facts to make either test pass.
+The first refund was also verified as succeeded in the sandbox Dashboard (`re_3UZieWKl3MBTGjp01hxNSvH9`). The sandbox Dashboard subsequently confirmed its full 79-cent provider-transfer reversal at 03:38:19 UTC. The following read-only local check did not yet reflect that reversal: original provider payout 79 cents, reversed counter zero, release status paid_out, and the transfer-recovery review warning still present. Only the original payout_released event existed (count one; customer trigger and the original transfer ID); no transfer-reversal event was recorded. Signed reversal-event delivery/processing and reconciliation therefore remain unverified. The second payment had no provider transfer and is now refunded with release status reversed; its Dashboard refund ID verification is pending.
+
+Asynchronous refund IDs are still absent from the local booking records. The refund-warning display fix is under test. Do not treat successful customer refunds as proof of completed provider-transfer recovery, and do not manually alter financial facts to make a test pass.
 
 ### Remaining release gates
 
-- Validate the refund-hardening change independently, including pending external approval, uncertain outcomes, signed refund events, and transfer recovery. Reconcile both outstanding sandbox requests before declaring refund coverage complete.
+- Validate the refund-warning display fix and reconcile the first payment's confirmed sandbox 79-cent transfer reversal into local state and audit history. Complete the second Dashboard refund-ID verification and assess asynchronous refund-ID recording before declaring refund coverage complete.
 - Authenticated customer/provider visual workflows have not yet been exercised. API sessions do not substitute for visual checks of timers, refresh, corrections, approval, and mobile layouts.
 - Async payment and dispute cases have not been exercised in this actual sandbox session. The full prelaunch checklist above still applies, including cases covered only by automated tests.
 - This addendum is QA evidence, not release approval. Deployment remains gated on the outstanding checks, passing validation of the final commit, and the explicit rollout process above.

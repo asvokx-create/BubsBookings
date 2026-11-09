@@ -159,12 +159,13 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
     const adjustedHeldPayout = !legacyDestinationCharge && !booking.stripe_transfer_id
       ? Math.max(0, Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / booking.price_cents))
       : booking.provider_payout_cents;
-    const settled = await database.query(`UPDATE bookings SET refund_status = 'refunded', stripe_refund_id = $2,
+    const settled = await database.query<{ payout_failure_reason: string | null }>(`UPDATE bookings SET refund_status = 'refunded', stripe_refund_id = $2,
       refunded_amount_cents = GREATEST(refunded_amount_cents, $3),
       customer_service_fee_refunded_cents = GREATEST(customer_service_fee_refunded_cents, $8),
       refunded_at = now(), payment_status = CASE WHEN $4 THEN 'refunded' ELSE payment_status END,
       provider_payout_cents = LEAST(provider_payout_cents, $5), stripe_transfer_reversed_cents = GREATEST(stripe_transfer_reversed_cents, $6),
       payment_release_status = CASE
+        WHEN stripe_transfer_id IS NOT NULL AND stripe_transfer_reversed_cents >= provider_payout_cents THEN 'reversed'
         WHEN stripe_transfer_id IS NOT NULL AND $7 <> '' THEN payment_release_status
         WHEN $4 THEN 'reversed'
         WHEN (payout_frozen_at IS NOT NULL OR payout_freeze_reason IS NOT NULL)
@@ -175,10 +176,10 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
       payout_frozen_at = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_frozen_at END,
       payout_frozen_by = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_frozen_by END,
       payout_freeze_reason = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_freeze_reason END,
-      payout_failure_reason = NULLIF($7, '')
+      payout_failure_reason = CASE WHEN stripe_transfer_id IS NOT NULL AND stripe_transfer_reversed_cents >= provider_payout_cents THEN NULL ELSE NULLIF($7, '') END
       WHERE id::text = $1 AND refunded_amount_cents <= $3
         AND customer_service_fee_refunded_cents <= $8
-      RETURNING id`, [bookingId, refund.id, totalRefunded, fullyRefunded, adjustedHeldPayout, reversedCents, reversalFailure, booking.customer_service_fee_refunded_cents + serviceFeeRefund]);
+      RETURNING id, payout_failure_reason`, [bookingId, refund.id, totalRefunded, fullyRefunded, adjustedHeldPayout, reversedCents, reversalFailure, booking.customer_service_fee_refunded_cents + serviceFeeRefund]);
     if (!settled.rowCount) {
       return NextResponse.json({ error: "Stripe completed the refund, but newer refund activity needs reconciliation. Contact support before retrying.", reconciliationRequired: true }, { status: 202 });
     }
@@ -190,7 +191,7 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
       'refund-approved-' || $2::uuid::text || '-' || extract(epoch from now())::bigint)`, [booking.customer_id, bookingId, `${booking.provider_name} approved a $${(stripeRefundAmount / 100).toFixed(2)} refund. Stripe will return it to the original payment method.`]);
     await recordActivity({ userId: session.user.id, action: "refund_approved", targetType: "booking", targetId: bookingId, metadata: { amountCents: stripeRefundAmount, serviceFeeRefundCents: serviceFeeRefund } });
     await recordAnalytics({ eventName: "refund_completed", userId: session.user.id, targetType: "booking", targetId: bookingId, metadata: { amountCents: stripeRefundAmount, serviceFeeRefundCents: serviceFeeRefund } });
-    return NextResponse.json({ ok: true, amount: stripeRefundAmount / 100, reversalNeedsReview: Boolean(reversalFailure) });
+    return NextResponse.json({ ok: true, amount: stripeRefundAmount / 100, reversalNeedsReview: Boolean(reversalFailure) && Boolean(settled.rows[0].payout_failure_reason) });
   } catch (error) {
     console.error("Stripe refund requires reconciliation", error);
     const approvalRequired = typeof error === "object" && error !== null && "code" in error && error.code === "approval_required";

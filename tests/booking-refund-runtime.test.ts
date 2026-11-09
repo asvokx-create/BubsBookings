@@ -33,6 +33,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
   let userId = "provider";
   let beforeQuery: (sql: string, values: unknown[]) => Promise<void> = async () => {};
   let duringRefund: () => Promise<void> = async () => {};
+  let duringReversal: () => Promise<void> = async () => {};
   const calls: any[] = [];
   t.mock.method(console, "error", () => {});
   const database = { query: async (sql: string, values: unknown[] = []) => {
@@ -59,6 +60,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
         return { id: "re_test_" + params.metadata.bookingId, status: refundStatus };
       } }, transfers: { createReversal: async (id: string, params: any, options: any) => {
         assert.equal(id, "tr_test_existing"); reversalCalls.push({ params, options });
+        await duringReversal();
         if (reversalError) throw reversalError;
         return { id: "trr_test_synthetic" };
       } },
@@ -90,7 +92,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const { POST } = load("@/app/api/bookings/[bookingId]/refund/route");
     const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
     const fixture = async () => {
-      failure = ""; stripeError = null; reversalError = null; reversalCalls.length = 0; refundStatus = "succeeded"; userId = "provider"; beforeQuery = async () => {}; duringRefund = async () => {}; calls.length = 0;
+      failure = ""; stripeError = null; reversalError = null; reversalCalls.length = 0; refundStatus = "succeeded"; userId = "provider"; beforeQuery = async () => {}; duringRefund = async () => {}; duringReversal = async () => {}; calls.length = 0;
       const id = randomUUID(); await db.query("INSERT INTO bookings (id,stripe_payment_intent_id) VALUES ($1,$2)", [id, "pi_test_" + id]); return id;
     };
     const send = (id: string, amount = 60) => POST(new Request("http://localhost/refund", { method: "POST", body: JSON.stringify({ action: "approve", amount }) }), { params: Promise.resolve({ bookingId: id }) });
@@ -102,6 +104,18 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       await assert.rejects(db.query(`INSERT INTO booking_events (booking_id,actor_user_id,event_type,message,metadata)
         VALUES ($1::uuid,$2,'refunded',$3,jsonb_build_object('amountCents',$4,'serviceFeeRefundCents',$5,'stripeRefundId',$6))`,
       [id, "provider", "Synthetic refund", 6299, 299, "re_test_original"]), { code: "42P18" });
+    });
+    await t.test("successful cumulative refund clears stale approval warning without inventing a refund ID", async () => {
+      const id = await fixture(); stripeError = Object.assign(new Error("synthetic"), { code: "approval_required" });
+      assert.equal((await send(id)).status, 202); assert.ok((await booking(id)).refund_failure_reason);
+      await webhook(id); const row = await booking(id);
+      assert.equal(row.refund_status, "refunded"); assert.equal(row.refund_failure_reason, null); assert.equal(row.stripe_refund_id, null);
+    });
+    await t.test("stale cumulative event cannot clear a newer outstanding refund warning", async () => {
+      const id = await fixture();
+      await db.query("UPDATE bookings SET refunded_amount_cents=1000, refund_amount_cents=2000, refund_status='processing', refund_failure_reason='New approval pending' WHERE id=$1", [id]);
+      await webhook(id, 1000);
+      assert.equal((await booking(id)).refund_failure_reason, "New approval pending");
     });
 
     for (const action of ["request", "reject"]) await t.test(`stale ${action} cannot replace an approval claim or emit a false event`, async () => {
@@ -221,6 +235,20 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       const row = await booking(id); assert.equal(row.refunded_amount_cents, 3000); assert.equal(row.payment_release_status, "frozen");
       assert.match(row.payout_freeze_reason, /reconciliation/);
     });
+    await t.test("later charge refund cannot recreate a warning after confirmed full transfer recovery", async () => {
+      const id = await fixture();
+      await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing', stripe_transfer_reversed_cents=5197, payment_release_status='reversed', payout_failure_reason=NULL WHERE id=$1", [id]);
+      await webhook(id);
+      const row = await booking(id); assert.equal(row.payout_failure_reason, null); assert.equal(row.payment_release_status, "reversed");
+    });
+    await t.test("confirmed full reversal during lost Stripe response survives local refund settlement", async () => {
+      const id = await fixture();
+      await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing', payment_release_status='paid_out' WHERE id=$1", [id]);
+      duringReversal = async () => { await db.query("UPDATE bookings SET stripe_transfer_reversed_cents=5197, payment_release_status='reversed', payout_failure_reason=NULL WHERE id=$1", [id]); };
+      reversalError = new Error("Lost response after confirmed recovery");
+      const response = await send(id); assert.equal(response.status, 200); assert.equal((await response.json()).reversalNeedsReview, false);
+      const row = await booking(id); assert.equal(row.payment_release_status, "reversed"); assert.equal(row.stripe_transfer_reversed_cents, 5197); assert.equal(row.payout_failure_reason, null);
+    });
   } finally { await cleanup(); }
 });
 
@@ -254,5 +282,46 @@ test("persisted transfer recovery warnings remain visible for full and partial r
     const result = copy({ paymentStatus, paymentRelease: { status: "paid_out", failureReason: "Provider transfer recovery needs review." } });
     assert.match(result.detail, /recovery needs review/);
     assert.doesNotMatch(result.detail, /payout was reversed/);
+  }
+});
+
+test("actual payment progress JSX renders the recovery warning after a full refund", () => {
+  const source = readFileSync("components/booking-details.tsx", "utf8");
+  const parsed = ts.createSourceFile("booking-details.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const sections: string[] = [];
+  let earningsDeclaration = "";
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxExpression(node) && node.getText(parsed).includes("Payment progress")) sections.push(node.getText(parsed));
+    if (ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(parsed) === "providerServiceEarnings")) earningsDeclaration = node.getText(parsed);
+    ts.forEachChild(node, visit);
+  };
+  visit(parsed); sections.sort((a, b) => a.length - b.length); assert.ok(sections.length); assert.ok(earningsDeclaration);
+  // Compile the production JSX, including its enclosing status condition, rather
+  // than duplicating a guard or testing only the release-copy helper.
+  const output = ts.transpileModule(`export function PaymentProgress({ booking, releaseCopy }) {
+    const postedTip = 0, customerPaymentTotal = 62.99;
+    const processingFeeIsFinal = false, displayedProviderProcessingFee = 0;
+    ${earningsDeclaration}
+    return <>${sections[0]}</>;
+  }`, { fileName: "payment-progress.tsx", compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const mod = { exports: {} as any }; new Function("require", "module", "exports", output)(nativeRequire, mod, mod.exports);
+  const { createElement } = nativeRequire("react");
+  const { renderToStaticMarkup } = nativeRequire("react-dom/server");
+  for (const paymentStatus of ["paid", "refunded", "pending"]) {
+    const html = renderToStaticMarkup(createElement(mod.exports.PaymentProgress, {
+      booking: { paymentStatus, viewerRole: "customer", price: 60, customerServiceFee: 2.99, paymentRelease: { freezeReason: null } },
+      releaseCopy: { label: "Payment refunded", detail: "Provider transfer recovery needs review." },
+    }));
+    if (paymentStatus === "pending") assert.equal(html, "");
+    else { assert.match(html, /Payment progress/); assert.match(html, /Provider transfer recovery needs review/); }
+  }
+  for (const [providerPayout, transferReversed, expectedEarnings] of [[0, 0, "0.00"], [0.79, 0, "0.79"], [0.79, 0.79, "0.00"]] as const) {
+    const html = renderToStaticMarkup(createElement(mod.exports.PaymentProgress, {
+      booking: { paymentStatus: "refunded", viewerRole: "provider", price: 1, customerServiceFee: 2.99,
+        paymentRelease: { providerPayout, transferReversed, estimatedProviderPayout: 9.99, freezeReason: null, platformFeeBasisPoints: 1000, platformFeeCap: null, platformFee: 0.1 } },
+      releaseCopy: { label: "Payment refunded", detail: "Refund recorded." },
+    }));
+    assert.match(html, new RegExp(`service earnings</span><span>\\$${expectedEarnings.replace(".", "\\.")}</span>`));
+    assert.doesNotMatch(html, /\$9\.99/);
   }
 });
