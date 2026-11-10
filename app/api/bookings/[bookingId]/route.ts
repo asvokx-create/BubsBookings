@@ -19,7 +19,7 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
   if (!session) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   const { bookingId } = await context.params;
   const result = await database.query<{
-    id: string; customer_id: string; customer_name: string; provider_id: string; provider_user_id: string; provider_name: string; owner_name: string;
+    hourly_project_id: string | null; id: string; customer_id: string; customer_name: string; provider_id: string; provider_user_id: string; provider_name: string; owner_name: string;
     service_id: string; service_slug: string; service_title: string; service_location_id: string | null; category: string; starts_at: Date; ends_at: Date;
     service_address: string; service_city: string | null; service_state: string | null; service_postal_code: string | null;
     access_instructions: string; notes: string; booking_answers: Record<string, string>; price_cents: number; status: string; was_confirmed: boolean; cancelled_by: string | null;
@@ -41,7 +41,7 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
     base_price_cents: number; add_on_total_cents: number; discount_cents: number; package_snapshot: Record<string, unknown> | null; add_on_snapshot: unknown[]; coupon_code_snapshot: string | null; recurring_series_id: string | null; recurrence_index: number | null; recurrence_frequency: string | null; recurrence_status: string | null; booking_kind: string;
     pricing_type_snapshot: "FIXED" | "HOURLY" | "QUOTE_ONLY"; hourly_rate_cents_snapshot: number | null; billable_duration_minutes: number; billing_increment_minutes_snapshot: number | null; minimum_duration_minutes_snapshot: number | null; maximum_duration_minutes_snapshot: number | null; actual_duration_minutes: number | null;
   }>(
-    `SELECT b.id::text, b.customer_id, customer.name AS customer_name, b.provider_id::text, p.user_id AS provider_user_id,
+    `SELECT (SELECT project.id::text FROM hourly_projects project WHERE project.payment_booking_id=b.id) AS hourly_project_id, b.id::text, b.customer_id, customer.name AS customer_name, b.provider_id::text, p.user_id AS provider_user_id,
             s.business_name AS provider_name, b.service_id::text, s.slug AS service_slug, s.title AS service_title, s.location_id::text AS service_location_id,
             s.category, b.starts_at, b.ends_at, b.service_address, b.service_city, b.service_state, b.service_postal_code, b.delivery_method,
             b.access_instructions, b.notes, b.booking_answers, b.price_cents, b.status,
@@ -131,7 +131,7 @@ export async function GET(_request: Request, context: RouteContext<"/api/booking
     `SELECT member.id::text, member.name FROM provider_team_members member
      WHERE member.provider_id::text = $1 AND ($2::text IS NULL OR EXISTS (SELECT 1 FROM provider_team_member_locations assigned_location WHERE assigned_location.team_member_id = member.id AND assigned_location.location_id::text = $2)) AND member.status = 'active' ORDER BY member.name`, [row.provider_id, row.service_location_id])).rows;
   return NextResponse.json({ booking: {
-    id: row.id, viewerRole, customerName: row.customer_name,
+    id: row.id, hourlyProjectId: row.hourly_project_id, viewerRole, customerName: row.customer_name,
     providerId: row.provider_id, providerName: row.provider_name, serviceId: row.service_id, serviceSlug: row.service_slug,
     serviceTitle: row.service_title, category: row.category, startsAt: row.starts_at, endsAt: row.ends_at,
     deliveryMethod: row.delivery_method,

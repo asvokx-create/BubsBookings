@@ -14,6 +14,7 @@ export async function GET(_request: Request, context: { params: Promise<{ bookin
     `SELECT s.title, s.business_name AS provider, b.starts_at, b.ends_at, b.service_address AS location, b.notes
      FROM bookings b JOIN services s ON s.id = b.service_id JOIN provider_profiles p ON p.id = b.provider_id
      WHERE b.id::text = $1 AND b.status IN ('confirmed', 'completed')
+       AND NOT EXISTS (SELECT 1 FROM hourly_projects project WHERE project.payment_booking_id=b.id)
        AND (b.customer_id = $2 OR p.user_id = $2) LIMIT 1`, [bookingId, session.user.id]);
   const booking = result.rows[0];
   if (!booking) return NextResponse.json({ error: "Calendar event not found." }, { status: 404 });

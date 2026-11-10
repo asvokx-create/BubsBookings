@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getAdminSession } from "@/lib/admin";
 import { database } from "@/lib/database";
 import { releaseBookingPayout } from "@/lib/payment-release";
+import { BOOKING_PAYOUT_RECONCILIATION } from "@/lib/booking-payout-reconciliation";
 import { refundBookingTip, releaseTipTransfer } from "@/lib/tip-payments";
 import { scanContent } from "@/lib/content-safety";
 import { assessListingFinancialCrimeRisk } from "@/lib/financial-crime-screening";
@@ -654,9 +655,11 @@ export async function PATCH(request: Request) {
             payout_freeze_reason = NULL,
             payment_release_status = CASE WHEN status = 'completed' THEN 'awaiting_customer' ELSE 'secured' END
             WHERE id::text = $1 AND payment_release_status = 'frozen'
-              AND refund_status NOT IN ('requested', 'processing')
+              AND payout_failure_reason IS DISTINCT FROM $2
+              AND refund_status NOT IN ('requested', 'processing', 'failed')
+              AND (refund_failure_reason IS NULL OR refund_status = 'rejected')
               AND NOT EXISTS (SELECT 1 FROM booking_disputes d WHERE d.booking_id = bookings.id AND d.status IN ('open', 'reviewing'))
-            RETURNING id`, [targetId]);
+            RETURNING id`, [targetId, BOOKING_PAYOUT_RECONCILIATION]);
       if (!result.rowCount) throw new Error("NOT_FOUND");
       targetType = "booking_payout";
       auditAction = status === "frozen" ? "payout_frozen" : "payout_unfrozen";

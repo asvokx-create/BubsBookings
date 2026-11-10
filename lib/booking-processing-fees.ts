@@ -1,6 +1,7 @@
 import "server-only";
 
 import type Stripe from "stripe";
+import type { PoolClient } from "pg";
 import { allocateProviderProcessingFeeCents } from "./booking-financials";
 import { database } from "./database";
 import { getStripe, getStripeMode, isStripeReady } from "./stripe";
@@ -43,13 +44,21 @@ export type ProcessingFeeReconciliation =
  * charges/transfers model; this function never creates a second fee or changes
  * the Stripe charge type.
  */
-export async function reconcileBookingProcessingFee(bookingId: string, knownChargeId?: string | null): Promise<ProcessingFeeReconciliation> {
-  const bookingResult = await database.query<{
+async function freezeRefundPendingFeeReconciliation(bookingId: string, executor: Pick<PoolClient, "query">) {
+  await executor.query(`UPDATE bookings SET payment_release_status='frozen',payout_frozen_at=COALESCE(payout_frozen_at,now()),
+    payout_freeze_reason='Refund occurred before Stripe fees were finalized; payout reconciliation required.'
+    WHERE id::text=$1 AND stripe_mode=$2 AND payment_flow='held_transfer_v1' AND payment_status='paid' AND stripe_transfer_id IS NULL
+      AND processing_fee_status<>'final' AND (refunded_amount_cents>0 OR customer_service_fee_refunded_cents>0)`, [bookingId,getStripeMode()]);
+}
+
+export async function reconcileBookingProcessingFee(bookingId: string, knownChargeId?: string | null, executor: Pick<PoolClient, "query"> = database): Promise<ProcessingFeeReconciliation> {
+  const bookingResult = await executor.query<{
     stripe_charge_id: string | null; price_cents: number; customer_total_cents: number | null;
     platform_fee_cents: number; stripe_processing_fee_cents: number | null;
-    provider_processing_fee_cents: number; provider_payout_cents: number; processing_fee_status: string;
+    provider_processing_fee_cents: number; provider_payout_cents: number; processing_fee_status: string; refunded_amount_cents: number; customer_service_fee_refunded_cents: number;
   }>(`SELECT stripe_charge_id, price_cents, customer_total_cents, platform_fee_cents,
-      stripe_processing_fee_cents, provider_processing_fee_cents, provider_payout_cents, processing_fee_status
+      stripe_processing_fee_cents, provider_processing_fee_cents, provider_payout_cents, processing_fee_status,
+      refunded_amount_cents, customer_service_fee_refunded_cents
     FROM bookings WHERE id::text = $1 AND stripe_mode = $2`, [bookingId, getStripeMode()]);
   const booking = bookingResult.rows[0];
   if (!booking) return { status: "pending" };
@@ -61,11 +70,15 @@ export async function reconcileBookingProcessingFee(bookingId: string, knownChar
       providerPayoutCents: booking.provider_payout_cents,
     };
   }
+  if (booking.refunded_amount_cents > 0 || booking.customer_service_fee_refunded_cents > 0) {
+    await freezeRefundPendingFeeReconciliation(bookingId, executor);
+    return { status: "pending" };
+  }
   const chargeId = knownChargeId ?? booking.stripe_charge_id;
   if (!chargeId || !booking.customer_total_cents) return { status: "pending" };
   const fee = await chargeFee(chargeId);
   if (fee.status !== "final") {
-    await database.query(`UPDATE bookings SET processing_fee_status = 'pending'
+    await executor.query(`UPDATE bookings SET processing_fee_status = 'pending'
       WHERE id::text = $1 AND stripe_mode = $2 AND processing_fee_status <> 'final'`, [bookingId, getStripeMode()]);
     return fee;
   }
@@ -75,10 +88,18 @@ export async function reconcileBookingProcessingFee(bookingId: string, knownChar
     customerTotalCents: booking.customer_total_cents,
   });
   const providerPayoutCents = Math.max(0, booking.price_cents - booking.platform_fee_cents - allocation.providerProcessingFeeCents);
-  await database.query(`UPDATE bookings SET stripe_processing_fee_cents = $2,
+  const finalized = await executor.query(`UPDATE bookings SET stripe_processing_fee_cents = $2,
       provider_processing_fee_cents = $3, provider_payout_cents = $4, processing_fee_status = 'final'
-    WHERE id::text = $1 AND stripe_mode = $5 AND processing_fee_status <> 'final'`,
+    WHERE id::text = $1 AND stripe_mode = $5 AND processing_fee_status <> 'final'
+      AND refunded_amount_cents = 0 AND customer_service_fee_refunded_cents = 0
+      AND refund_status NOT IN ('requested','processing') RETURNING id`,
   [bookingId, fee.stripeProcessingFeeCents, allocation.providerProcessingFeeCents, providerPayoutCents, getStripeMode()]);
+  // A refund may have completed while Stripe's balance transaction was fetched.
+  // The conditional write must not restore the original pre-refund payout.
+  if (!finalized.rowCount) {
+    await freezeRefundPendingFeeReconciliation(bookingId, executor);
+    return { status: "pending" };
+  }
   return {
     status: "final",
     stripeProcessingFeeCents: fee.stripeProcessingFeeCents,

@@ -114,9 +114,9 @@ test("published legal versions and guide compensation language stay current", as
     readFile(new URL("../lib/guides.ts", import.meta.url), "utf8"),
   ]);
 
-  assert.match(policyConsent, /POLICY_VERSION = "2026-10-22"/);
-  assert.match(policyConsent, /PROVIDER_AGREEMENT_VERSION = "2026-10-14"/);
-  assert.match(policyConsent, /POLICY_EFFECTIVE_DATE = "October 22, 2026"/);
+  assert.match(policyConsent, /POLICY_VERSION = "2026-11-09"/);
+  assert.match(policyConsent, /PROVIDER_AGREEMENT_VERSION = "2026-11-09"/);
+  assert.match(policyConsent, /POLICY_EFFECTIVE_DATE = "November 9, 2026"/);
   assert.match(providerAgreement, /effectiveDate=\{POLICY_EFFECTIVE_DATE\}/);
   assert.doesNotMatch(guides, /\$10 activation bonus|20% share|60-day attribution window/);
   assert.equal((guides.match(/updatedAt: "2026-10-07"/g) ?? []).length, 21);

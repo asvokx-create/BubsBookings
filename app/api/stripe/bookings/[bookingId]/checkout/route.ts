@@ -19,6 +19,8 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
   if (!await enforceRateLimit({ request, userId: session.user.id, bucket: "stripe-booking-checkout", limit: 8 }))
     return NextResponse.json({ error: "Too many payment attempts. Please wait and try again." }, { status: 429 });
   const { bookingId } = await context.params;
+  const project = await database.query<{ id: string }>("SELECT id::text FROM hourly_projects WHERE payment_booking_id::text=$1", [bookingId]);
+  if (project.rows[0]) return NextResponse.json({ error: "Review and pay the final timesheet from the project page.", projectId: project.rows[0].id }, { status: 409 });
   const result = await database.query<{
     id: string; title: string; provider_name: string; price_cents: number; status: string;
     payment_status: string; quote_status: string; plan: ProviderPlan; stripe_account_id: string | null;

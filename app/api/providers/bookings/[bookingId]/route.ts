@@ -83,6 +83,11 @@ export async function PATCH(request: Request, context: RouteContext<"/api/provid
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "Booking not found." }, { status: 404 });
     }
+    const projectPayment = await client.query("SELECT 1 FROM hourly_projects WHERE payment_booking_id::text = $1", [bookingId]);
+    if (projectPayment.rowCount) {
+      await client.query("ROLLBACK");
+      return NextResponse.json({ error: "This is an approved hourly-project payment. Manage the project timesheet or use the existing refund and dispute tools.", code: "PROJECT_PAYMENT_LOCKED" }, { status: 409 });
+    }
     if (booking.age_verification_status !== "verified" && !["declined", "cancel"].includes(action)) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "Complete provider age verification before accepting, assigning, quoting, or completing bookings." }, { status: 403 });

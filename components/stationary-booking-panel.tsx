@@ -10,7 +10,7 @@ function sameStyle(a: CSSProperties, b: CSSProperties) {
   return aKeys.length === bKeys.length && aKeys.every((key) => a[key as keyof CSSProperties] === b[key as keyof CSSProperties]);
 }
 
-export default function StationaryBookingPanel({ children }: { children: ReactNode }) {
+export default function StationaryBookingPanel({ children, disabled = false }: { children: ReactNode; disabled?: boolean }) {
   const anchorRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
@@ -18,7 +18,7 @@ export default function StationaryBookingPanel({ children }: { children: ReactNo
   useLayoutEffect(() => {
     const anchor = anchorRef.current;
     const panel = panelRef.current;
-    if (!anchor || !panel) return;
+    if (!anchor || !panel || disabled) return;
 
     const syncDock = () => {
       if (!window.matchMedia(desktopQuery).matches) {
@@ -50,7 +50,7 @@ export default function StationaryBookingPanel({ children }: { children: ReactNo
       window.removeEventListener("scroll", syncDock);
       window.removeEventListener("resize", syncDock);
     };
-  }, []);
+  }, [disabled]);
 
   return (
     <div ref={anchorRef} className="min-w-0">

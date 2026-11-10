@@ -3,7 +3,12 @@ import { getAdminSession } from "@/lib/admin";
 import { database } from "@/lib/database";
 import { refundUnreleasedBooking, releaseBookingPayout } from "@/lib/payment-release";
 import { enforceRateLimit } from "@/lib/request-security";
-import { getStripe, getStripeMode, isStripeReady } from "@/lib/stripe";
+import { getStripeMode, isStripeReady } from "@/lib/stripe";
+import type { PoolClient } from "pg";
+import { BOOKING_REFUND_RECONCILIATION } from "@/lib/booking-refund-operations";
+import { BOOKING_PAYOUT_RECONCILIATION } from "@/lib/booking-payout-reconciliation";
+
+import { claimBookingRefundOperation, submitBookingRefundOperation, bookingDisputeRefundOperation, bookingRefundOperationResult, reconcileBookingRefundsForPayment } from "@/lib/booking-refund-finalization";
 
 const statuses = new Set(["reviewing", "resolved", "dismissed"]);
 
@@ -88,7 +93,7 @@ export async function PATCH(request: Request) {
   }
 
   if (status === "reviewing") {
-    const result = await database.query("UPDATE booking_disputes SET status = 'reviewing', admin_note = $2, updated_at = now() WHERE id::text = $1 AND status = 'open' RETURNING id", [id, note]);
+    const result = await database.query("UPDATE booking_disputes SET status = 'reviewing', admin_note = $2, updated_at = now(), refund_operation_id=NULL WHERE id::text = $1 AND status = 'open' RETURNING id", [id, note]);
     if (!result.rowCount) return NextResponse.json({ error: "That dispute is no longer open." }, { status: 409 });
     await database.query(
       `INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, details)
@@ -104,8 +109,19 @@ export async function PATCH(request: Request) {
   );
   const dispute = existing.rows[0];
   if (!dispute) return NextResponse.json({ error: "That dispute has already been decided or was not found." }, { status: 409 });
+  const priorRefund = await bookingDisputeRefundOperation(dispute.booking_id, id, getStripeMode());
+  if (priorRefund) {
+    const original = priorRefund.decision_snapshot;
+    if (!original || original.outcome !== outcome || original.note !== note
+      || (outcome === "partial" && priorRefund.service_amount_cents !== partialAmountCents)) {
+      return NextResponse.json({ error: "This case already has an authorized refund. Reconcile its original decision rather than issuing another refund.", reconciliationRequired: true }, { status: 409 });
+    }
+    await reconcileBookingRefundsForPayment(priorRefund.payment_intent_id, getStripeMode());
+    const recovered = await bookingRefundOperationResult(priorRefund.id);
+    return NextResponse.json(recovered.ok ? { ok: true, outcome, recovered: true } : { error: recovered.error, reconciliationRequired: true }, { status: recovered.ok ? 200 : 202 });
+  }
   const claimed = await database.query<{ booking_id: string }>(`UPDATE booking_disputes
-    SET status = 'resolved', admin_note = $3, resolution_outcome = $4, resolved_at = now(), resolved_by = $5, updated_at = now()
+    SET status = 'resolved', admin_note = $3, resolution_outcome = $4, resolved_at = now(), resolved_by = $5, updated_at = now(), refund_operation_id=NULL
     WHERE id::text = $1 AND status = $2 RETURNING booking_id::text`,
     [id, dispute.status, note, outcome, session.user.id]);
   if (!claimed.rowCount) return NextResponse.json({ error: "Another administrator already decided this dispute." }, { status: 409 });
@@ -113,70 +129,82 @@ export async function PATCH(request: Request) {
   const restoreDispute = async () => {
     await database.query(`UPDATE booking_disputes SET status = $2, resolution_outcome = NULL,
       resolved_at = NULL, resolved_by = NULL, updated_at = now()
-      WHERE id::text = $1 AND status = 'resolved' AND resolution_outcome = $3`, [id, dispute.status, outcome]);
+      WHERE id::text = $1 AND status = 'resolved' AND resolution_outcome = $3 AND admin_note=$4 AND resolved_by=$5
+        AND NOT EXISTS (SELECT 1 FROM booking_refund_operations o WHERE o.id=booking_disputes.refund_operation_id AND o.decision_completed_at IS NOT NULL)`, [id, dispute.status, outcome,note,session.user.id]);
+  };
+
+  const recordDecision = async (client: Pick<PoolClient, "query">, financialResult: Record<string, unknown>) => {
+    await client.query(`INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, details)
+      VALUES ($1, $2, $3, $4, $5::jsonb)`,
+    [session.user.id, "disputes_resolved", "booking_dispute", id, JSON.stringify({ status, note, outcome, ...financialResult })]);
+    const decisionMessage = outcome === "provider"
+      ? "The dispute was decided in the provider's favor. Any eligible held payout was released or returned to the normal payout queue."
+      : outcome === "partial"
+        ? `The dispute was resolved with a $${(partialAmountCents / 100).toFixed(2)} partial refund. The provider share was adjusted to match.`
+        : "The dispute was decided in the customer's favor. The held payment was refunded.";
+    await client.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
+      SELECT participant.user_id, $3::uuid, 'dispute_resolved', 'Dispute decision', $4, '/disputes',
+        'dispute-resolution-' || $1::text || '-' || participant.user_id
+      FROM (VALUES ($2::text), ($5::text)) AS participant(user_id)
+      ON CONFLICT (dedupe_key) DO NOTHING`, [id, dispute.opened_by, dispute.booking_id, decisionMessage, dispute.against_user_id]);
   };
 
   let financialResult: Record<string, unknown> = {};
   if (outcome === "partial") {
     if (!isStripeReady()) { await restoreDispute(); return NextResponse.json({ error: "Stripe is not configured." }, { status: 503 }); }
     const payment = await database.query<{
-      price_cents: number; refunded_amount_cents: number; platform_fee_cents: number; provider_payout_cents: number;
+      price_cents: number; refunded_amount_cents: number; provider_payout_cents: number;
+      customer_service_fee_refunded_cents: number; payment_status: string;
       stripe_payment_intent_id: string | null; stripe_transfer_id: string | null; stripe_transfer_reversed_cents: number;
       stripe_mode: "test" | "live" | null;
-    }>(`SELECT price_cents, refunded_amount_cents, platform_fee_cents, provider_payout_cents,
+    }>(`SELECT price_cents, refunded_amount_cents, provider_payout_cents, customer_service_fee_refunded_cents, payment_status,
         stripe_payment_intent_id, stripe_transfer_id, stripe_transfer_reversed_cents, stripe_mode
       FROM bookings WHERE id::text = $1`, [dispute.booking_id]);
     const booking = payment.rows[0];
     const remaining = booking ? booking.price_cents - booking.refunded_amount_cents : 0;
-    if (!booking?.stripe_payment_intent_id || booking.stripe_mode !== getStripeMode() || partialAmountCents < 1 || partialAmountCents >= remaining) {
+    if (!booking?.stripe_payment_intent_id || booking.payment_status !== "paid" || booking.stripe_mode !== getStripeMode() || partialAmountCents < 1 || partialAmountCents >= remaining) {
       await restoreDispute();
       return NextResponse.json({ error: `Enter a partial refund between $0.01 and $${Math.max(0, (remaining - 1) / 100).toFixed(2)}.` }, { status: 400 });
     }
-    try {
-      const totalRefunded = booking.refunded_amount_cents + partialAmountCents;
-      const refund = await getStripe().refunds.create({
-        payment_intent: booking.stripe_payment_intent_id,
-        amount: partialAmountCents,
-        metadata: { bookingId: dispute.booking_id, kind: "dispute_partial_refund", disputeId: id },
-      }, { idempotencyKey: `dispute-partial-refund-${id}-${totalRefunded}` });
-      // Use the recorded payout after the platform-fee cap and finalized
-      // processing-cost allocation. Do not reapply the percentage on a refund.
-      const originalProviderShare = booking.provider_payout_cents;
-      const adjustedProviderShare = Math.max(0, Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / booking.price_cents));
-      let reversedCents = booking.stripe_transfer_reversed_cents;
-      if (booking.stripe_transfer_id) {
-        const targetReversal = Math.max(0, originalProviderShare - adjustedProviderShare);
-        const reversalAmount = Math.max(0, targetReversal - reversedCents);
-        if (reversalAmount > 0) {
-          await getStripe().transfers.createReversal(booking.stripe_transfer_id, {
-            amount: reversalAmount,
-            metadata: { bookingId: dispute.booking_id, kind: "dispute_partial_reversal", disputeId: id, stripeRefundId: refund.id },
-          }, { idempotencyKey: `dispute-partial-reversal-${id}-${targetReversal}` });
-          reversedCents += reversalAmount;
-        }
-      }
-      await database.query(`UPDATE bookings SET refund_status = 'refunded', stripe_refund_id = $2,
-        refunded_amount_cents = $3, refunded_at = now(), provider_payout_cents = $4,
-        stripe_transfer_reversed_cents = $5, payment_release_status = CASE
-          WHEN stripe_transfer_id IS NOT NULL THEN 'partially_released'
-          WHEN status = 'completed' THEN 'awaiting_customer' ELSE 'secured' END,
-        payout_frozen_at = NULL, payout_frozen_by = NULL, payout_freeze_reason = NULL, payout_failure_reason = NULL
-        WHERE id::text = $1`, [dispute.booking_id, refund.id, totalRefunded, adjustedProviderShare, reversedCents]);
-      await database.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message, metadata)
-        VALUES ($1::uuid, $2, 'refunded', $3, jsonb_build_object('amountCents', $4::integer, 'stripeRefundId', $5, 'disputeId', $6))`,
-        [dispute.booking_id, session.user.id, `$${(partialAmountCents / 100).toFixed(2)} partial dispute refund issued through Stripe.`, partialAmountCents, refund.id, id]);
-      financialResult = { partialRefunded: true, amountCents: partialAmountCents, providerShareCents: adjustedProviderShare };
-    } catch (error) {
-      console.error("Partial dispute resolution failed", error);
+    // The transfer principal may already reflect refunds issued while funds were
+    // held. Without a transfer-time refund baseline, another proportional recovery
+    // could charge the provider twice for that earlier refund. Reconcile first.
+    if (booking.stripe_transfer_id && (booking.refunded_amount_cents > 0 || booking.stripe_transfer_reversed_cents > 0)) {
       await restoreDispute();
-      return NextResponse.json({ error: "Stripe could not complete the partial refund and transfer adjustment. The dispute remains open." }, { status: 502 });
+      return NextResponse.json({ error: "This transferred payment has earlier refund or recovery activity. Reconcile its remaining provider share before issuing another partial refund.", reconciliationRequired: true }, { status: 409 });
     }
+    const refundClaim = await claimBookingRefundOperation({ bookingId: dispute.booking_id, mode: getStripeMode(), origin: 'dispute_partial', actorUserId: session.user.id, disputeId: id },
+      client => client.query(`UPDATE bookings SET refund_status = 'processing', refund_amount_cents = $2,
+      refund_reason = $3, refund_requested_at = COALESCE(refund_requested_at, now()), refund_failure_reason = $4,
+      payout_frozen_at = CASE WHEN stripe_transfer_id IS NULL THEN COALESCE(payout_frozen_at, now()) ELSE payout_frozen_at END,
+      payout_freeze_reason = CASE WHEN stripe_transfer_id IS NULL THEN COALESCE(payout_freeze_reason, 'Stripe refund requires payout reconciliation') ELSE payout_freeze_reason END
+      WHERE id::text = $1 AND payment_status = 'paid' AND stripe_mode = $5 AND stripe_payment_intent_id = $6
+        AND payment_release_status <> 'processing' AND payout_failure_reason IS DISTINCT FROM $13
+        AND price_cents = $7 AND refunded_amount_cents = $8 AND customer_service_fee_refunded_cents = $9
+        AND provider_payout_cents = $10 AND stripe_transfer_id IS NOT DISTINCT FROM $11::text
+        AND stripe_transfer_reversed_cents = $12 AND refund_status NOT IN ('processing', 'failed')
+        AND (refund_failure_reason IS NULL OR refund_status = 'rejected') RETURNING id`,
+    [dispute.booking_id, partialAmountCents, note, BOOKING_REFUND_RECONCILIATION, getStripeMode(), booking.stripe_payment_intent_id,
+      booking.price_cents, booking.refunded_amount_cents, booking.customer_service_fee_refunded_cents,
+      booking.provider_payout_cents, booking.stripe_transfer_id, booking.stripe_transfer_reversed_cents, BOOKING_PAYOUT_RECONCILIATION]));
+    if (!refundClaim) {
+      await restoreDispute();
+      return NextResponse.json({ error: "This payment changed or a refund already needs reconciliation. Review it before retrying.", reconciliationRequired: true }, { status: 409 });
+    }
+    const refund = await submitBookingRefundOperation(refundClaim.operation.id);
+    if (!refund.refunded || refund.recoveryNeedsReview) {
+      await restoreDispute();
+      return NextResponse.json({ error: refund.error, reconciliationRequired: true }, { status: 202 });
+    }
+    return NextResponse.json({ ok: true, outcome, partialRefunded: true, amountCents: partialAmountCents });
   } else if (outcome === "customer") {
-    const refund = await refundUnreleasedBooking(dispute.booking_id, `Dispute resolved in the customer's favor: ${note}`);
+    const refund = await refundUnreleasedBooking(dispute.booking_id, `Dispute resolved in the customer's favor: ${note}`, { disputeId: id, actorUserId: session.user.id });
     if (!refund.ok) {
       await restoreDispute();
-      return NextResponse.json({ error: refund.error }, { status: 502 });
+      return NextResponse.json({ error: refund.error, reconciliationRequired: "reconciliationRequired" in refund },
+        { status: "pending" in refund && refund.pending ? 202 : 502 });
     }
+    if ("decisionHandled" in refund && refund.decisionHandled) return NextResponse.json({ ok: true, outcome, refunded: true });
     if (!refund.refunded) {
       const payment = await database.query<{ payment_status: string }>("SELECT payment_status FROM bookings WHERE id::text = $1", [dispute.booking_id]);
       if (payment.rows[0]?.payment_status !== "refunded") {
@@ -190,7 +218,10 @@ export async function PATCH(request: Request) {
       payment_release_status = CASE WHEN b.status = 'completed' THEN 'awaiting_customer' ELSE 'secured' END
       WHERE b.id::text = $1 AND b.payout_freeze_reason = 'Open booking dispute'
         AND b.payment_status = 'paid' AND b.payment_release_status = 'frozen'
-        AND NOT EXISTS (SELECT 1 FROM booking_disputes d WHERE d.booking_id = b.id AND d.status IN ('open', 'reviewing'))`, [dispute.booking_id]);
+        AND b.payout_failure_reason IS DISTINCT FROM $2
+        AND b.refund_status NOT IN ('requested', 'processing', 'failed')
+        AND (b.refund_failure_reason IS NULL OR b.refund_status = 'rejected')
+        AND NOT EXISTS (SELECT 1 FROM booking_disputes d WHERE d.booking_id = b.id AND d.status IN ('open', 'reviewing'))`, [dispute.booking_id, BOOKING_PAYOUT_RECONCILIATION]);
     const release = await releaseBookingPayout(dispute.booking_id, "admin");
     const payoutState = await database.query<{
       status: string; payment_status: string; stripe_transfer_id: string | null; open_disputes: number;
@@ -213,20 +244,18 @@ export async function PATCH(request: Request) {
     }
     financialResult = release.ok ? { payoutReleased: release.released } : { payoutReleased: false, payoutMessage: release.error };
   }
-  await database.query(
-    `INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, details)
-     VALUES ($1, $2, $3, $4, $5::jsonb)`,
-    [session.user.id, "disputes_resolved", "booking_dispute", id, JSON.stringify({ status, note, outcome, ...financialResult })],
-  );
-  const decisionMessage = outcome === "provider"
-    ? "The dispute was decided in the provider's favor. Any eligible held payout was released or returned to the normal payout queue."
-    : outcome === "partial"
-      ? `The dispute was resolved with a $${(partialAmountCents / 100).toFixed(2)} partial refund. The provider share was adjusted to match.`
-      : "The dispute was decided in the customer's favor. The held payment was refunded.";
-  await database.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-    SELECT participant.user_id, $3::uuid, 'dispute_resolved', 'Dispute decision', $4, '/disputes',
-      'dispute-resolution-' || $1 || '-' || participant.user_id
-    FROM (VALUES ($2::text), ($5::text)) AS participant(user_id)
-    ON CONFLICT (dedupe_key) DO NOTHING`, [id, dispute.opened_by, dispute.booking_id, decisionMessage, dispute.against_user_id]);
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    await recordDecision(client, financialResult);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    // A customer retry can only close the already-refunded case, not refund again.
+    // Never reopen a released provider payout because a notification failed.
+    if (outcome === "customer") await restoreDispute();
+    console.error("Dispute decision audit requires reconciliation", error);
+    return NextResponse.json({ error: "The payment decision was processed, but its case records need reconciliation. Review the payment before retrying.", reconciliationRequired: true }, { status: 202 });
+  } finally { client.release(); }
   return NextResponse.json({ ok: true, outcome, ...financialResult });
 }
