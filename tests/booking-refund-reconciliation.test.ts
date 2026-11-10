@@ -2,6 +2,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+const nativeRequire=createRequire(import.meta.url);
 import ts from "typescript";
 import { PGlite } from "@electric-sql/pglite";
 
@@ -16,6 +18,8 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
     const output=ts.transpileModule(readFileSync(file,"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
     const mod={exports:{}};
     new Function("require","module","exports",output)((name:string)=>{
+      if(name.startsWith("node:"))return nativeRequire(name);
+      if(name==="./booking-refund-finalization")return load("lib/booking-refund-finalization.ts");
       if(name==="server-only")return {};
       if(name==="./database")return {database};
       if(name==="./stripe")return {isStripeReady:()=>true,getStripeMode:()=>"test",getStripe:()=>({charges:{retrieve:async()=>{if(refundDuringFeeFetch){refundDuringFeeFetch=false;await db.exec("UPDATE bookings SET refunded_amount_cents=2500,provider_payout_cents=6750,refund_status='refunded'");}return charge;}},transfers:{create:async()=>{transfers++;return {id:"tr_test"};}}})};
@@ -42,6 +46,7 @@ test("external partial refunds freeze actual payout SQL; reconciled refunds rema
       INSERT INTO services VALUES('00000000-0000-4000-8000-000000000002','Company','Work');
     `);
     await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+    await db.exec(readFileSync("database/migrations/113_booking_refund_operations.sql", "utf8"));
     const id="00000000-0000-4000-8000-000000000003";
     const reset=async()=>{await db.exec("DELETE FROM bookings");await db.query(`INSERT INTO bookings(id,customer_id,provider_id,service_id,payment_status,stripe_mode,payment_release_status,status,refund_status,stripe_charge_id,stripe_payment_intent_id,provider_payout_cents,payment_flow,price_cents,customer_service_fee_cents,customer_total_cents,refunded_amount_cents,customer_service_fee_refunded_cents)
       VALUES($1,'customer','00000000-0000-4000-8000-000000000001','00000000-0000-4000-8000-000000000002','paid','test','awaiting_customer','completed','none','ch_test','pi_test',9000,'held_transfer_v1',10000,299,10299,0,0)`,[id]);charge.amount_refunded=0;charge.refunded=false;};

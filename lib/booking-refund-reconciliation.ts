@@ -8,7 +8,15 @@ import { BOOKING_REFUND_RECONCILIATION } from "./booking-refund-operations";
  * Only full-charge settlement proves an outstanding refund warning is obsolete;
  * partial totals do not identify which pending operation completed. */
 export async function recordBookingChargeRefund(input: { paymentIntentId: string | null; bookingId: string; mode: "test" | "live"; fullyRefunded: boolean; amountRefunded: number; chargeAmount: number }) {
-  return database.query<{id:string}>(`UPDATE bookings SET
+  const client=await database.connect();
+  try {
+    await client.query("BEGIN");
+    // Acquire the booking lock before the ledger check gets its statement
+    // snapshot. A simultaneous new claim must be visible after that wait.
+    await client.query(`SELECT id FROM bookings WHERE stripe_mode=$2
+      AND (stripe_payment_intent_id=$1 OR ($3<>'' AND id::text=$3)) FOR UPDATE`,
+    [input.paymentIntentId,input.mode,input.bookingId]);
+    const result=await client.query<{id:string}>(`UPDATE bookings SET
     payment_status = CASE WHEN $3 THEN 'refunded' ELSE payment_status END,
     refund_status = 'refunded',
     refund_failure_reason = CASE WHEN $3 AND $4 >= customer_total_cents THEN NULL
@@ -35,6 +43,12 @@ export async function recordBookingChargeRefund(input: { paymentIntentId: string
     customer_service_fee_refunded_cents = GREATEST(customer_service_fee_refunded_cents,LEAST(customer_service_fee_cents,GREATEST($4-price_cents,0))),
     refunded_at = now()
     WHERE stripe_mode=$2 AND customer_total_cents=$6
+      AND NOT EXISTS (SELECT 1 FROM booking_refund_operations o
+        WHERE o.booking_id=bookings.id AND o.stripe_mode=$2 AND (o.refund_confirmed_at IS NULL OR o.settlement_issue_at IS NOT NULL))
       AND (stripe_payment_intent_id=$1 OR ($5<>'' AND id::text=$5)) RETURNING id::text`,
     [input.paymentIntentId,input.mode,input.fullyRefunded,input.amountRefunded,input.bookingId,input.chargeAmount,BOOKING_PAYOUT_RECONCILIATION,BOOKING_REFUND_RECONCILIATION]);
+    await client.query("COMMIT");
+    return result;
+  } catch(error) {await client.query("ROLLBACK").catch(()=>undefined);throw error;}
+  finally{client.release();}
 }

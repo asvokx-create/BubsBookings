@@ -1,3 +1,4 @@
+import { observeBookingRefund, observeBookingRefundTransfer, reconcileBookingRefundsForPayment } from "@/lib/booking-refund-finalization";
 import { recordBookingChargeRefund } from "@/lib/booking-refund-reconciliation";
 import { recordBookingPayoutTransfer } from "@/lib/booking-payout-reconciliation";
 import { finalizeBookingPayout } from "@/lib/booking-payout-finalization";
@@ -363,6 +364,7 @@ async function recordTransferReversed(transfer: Stripe.Transfer) {
   } finally {
     client.release();
   }
+  await observeBookingRefundTransfer(transfer, getStripeMode());
   await finalizeBookingPayout(bookingId, getStripeMode());
 }
 
@@ -762,6 +764,14 @@ async function processEvent(event: Stripe.Event) {
       await syncProviderAgeVerificationFromStripe(event.data.object.id);
       break;
     }
+    case "refund.created":
+    case "refund.updated":
+    case "refund.failed": {
+      // Refunds may succeed and later fail. Read current state so a delayed
+      // event snapshot cannot undo a newer settlement or hide a returned refund.
+      await observeBookingRefund(await getStripe().refunds.retrieve(event.data.object.id), getStripeMode(), true, true);
+      break;
+    }
     case "charge.refunded": {
       const charge = event.data.object;
       const paymentIntentId = idOf(charge.payment_intent);
@@ -771,9 +781,13 @@ async function processEvent(event: Stripe.Event) {
       const bookingId = paymentIntent?.metadata.kind === "booking_payment"
         ? paymentIntent.metadata.bookingId ?? ""
         : "";
+      // Bind success evidence first, then apply this event's cumulative totals
+      // before finalizing any decision or dispatching provider recovery.
+      if (paymentIntentId) await reconcileBookingRefundsForPayment(paymentIntentId, getStripeMode(), false);
       const refunded = await recordBookingChargeRefund({ paymentIntentId, mode: getStripeMode(), fullyRefunded: charge.refunded,
         amountRefunded: charge.amount_refunded, bookingId, chargeAmount: charge.amount });
       for (const booking of refunded.rows) await syncAffiliateCommissionForBooking(booking.id);
+      if (paymentIntentId) await reconcileBookingRefundsForPayment(paymentIntentId, getStripeMode());
       await recordTipRefund(charge);
       break;
     }

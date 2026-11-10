@@ -58,6 +58,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const client = await connect(); return { query: wrap(client), release: (discard = false) => { releasedClients.push(discard); client.release(discard); } };
   } };
   t.mock.method(console, "error", () => {});
+  const refunds = new Map<string,any>(); let reversed=0;
   const replacements: Record<string, any> = {
     "server-only": {}, "next/headers": { headers: async () => new Headers() },
     "@/lib/database": { database },
@@ -73,21 +74,20 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     "@/lib/stripe": { getStripeMode: () => "test", isStripeReady: () => true, getStripe: () => ({
       refunds: { create: async (params: any, options: any) => {
         assert.ok(params.payment_intent.startsWith("pi_test_")); calls.push({ params, options });
-        await duringRefund(); if (stripeError) throw stripeError;
-        return { id: "re_test_" + calls.length, status: refundStatus };
-      } },
+        const refund={id:"re_test_"+params.metadata.bookingId,status:refundStatus,amount:params.amount,currency:"usd",payment_intent:params.payment_intent,charge:"ch_test_"+params.metadata.bookingId,metadata:{...params.metadata}};if(!stripeError)refunds.set(refund.id,refund);await duringRefund();if(stripeError)throw stripeError;return refund;
+      },retrieve:async(id:string)=>refunds.get(id),list:async(params:any)=>({data:[...refunds.values()].filter(r=>r.payment_intent===params.payment_intent),has_more:false}) },
       charges: { retrieve: async (id: string) => {
         const booking = (await db.query("SELECT * FROM bookings WHERE stripe_charge_id=$1", [id])).rows[0];
         return { id, livemode: false, currency: "usd", amount: booking.customer_total_cents,
           amount_refunded: booking.refunded_amount_cents + booking.customer_service_fee_refunded_cents,
           refunded: booking.payment_status === "refunded", disputed: false, payment_intent: booking.stripe_payment_intent_id };
       } },
-      transfers: { create: async (params: any, options: any) => {
+      transfers: { retrieve:async(id:string)=>{const op=(await db.query("SELECT * FROM booking_refund_operations WHERE transfer_id=$1 ORDER BY created_at DESC LIMIT 1",[id])).rows[0];const b=(await db.query("SELECT stripe_transfer_reversed_cents FROM bookings WHERE id=$1",[op.booking_id])).rows[0];return {id,livemode:false,currency:"usd",amount:op.provider_share_cents,amount_reversed:Math.max(op.baseline_reversed_cents+reversed,b.stripe_transfer_reversed_cents),destination:op.connected_account_id,source_transaction:op.charge_id,metadata:{bookingId:op.booking_id,kind:"provider_payout"}};}, create: async (params: any, options: any) => {
         transfers.push({ params, options }); await duringTransfer(); if (transferError) throw transferError; return { id: "tr_test_created" };
       }, createReversal: async (id: string, params: any, options: any) => {
         assert.equal(id, "tr_test_existing"); reversals.push({ params, options });
         await duringReversal(); if (reversalError) throw reversalError;
-        return { id: "trr_test_" + reversals.length };
+        reversed += params.amount; return { id: "trr_test_" + reversals.length,amount:params.amount,transfer:id };
       } },
     }) },
   };
@@ -124,6 +124,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       CREATE TABLE notifications (user_id text, booking_id uuid, type text, title text, message text, href text, dedupe_key text UNIQUE);
       CREATE TABLE admin_audit_log (actor_user_id text, action text, target_type text, target_id text, details jsonb);`);
     await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+    await db.exec(readFileSync("database/migrations/113_booking_refund_operations.sql","utf8"));
     await db.exec(`CREATE TABLE affiliate_referrals (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), affiliate_id text DEFAULT 'affiliate',
         provider_id text DEFAULT 'provider-profile', status text DEFAULT 'listing_published', qualified_at timestamptz,
         activation_bonus_enabled boolean DEFAULT false, revenue_share_enabled boolean DEFAULT true,
@@ -143,9 +144,11 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const { finalizeBookingPayout, finalizePendingBookingPayouts } = load("@/lib/booking-payout-finalization");
     const { PATCH } = load("@/app/api/admin/issues/route");
     const { POST } = load("@/app/api/bookings/[bookingId]/refund/route");
+    const { observeBookingRefundTransfer, observeBookingRefund, reconcileBookingRefundsForPayment } = load("@/lib/booking-refund-finalization");
     const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
     const { BOOKING_PAYOUT_RECONCILIATION, recordBookingPayoutTransfer } = load("@/lib/booking-payout-reconciliation");
     const fixture = async () => {
+      refunds.clear(); reversed=0;
       failure = ""; stripeError = null; reversalError = null; transferError = null; unlockFailure = false; lockResponseFailure = false; releasedClients.length = 0;
       refundStatus = "succeeded"; userId = "provider"; calls.length = 0; reversals.length = 0; transfers.length = 0;
       duringRefund = async () => {}; duringReversal = async () => {}; duringTransfer = async () => {}; beforeQuery = async () => {};
@@ -163,8 +166,13 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     const manual = (id: string, action = "approve") => POST(new Request("http://localhost/refund", {
       method: "POST", body: JSON.stringify({ action, amount: 30, reason: "Synthetic reason" }),
     }), { params: Promise.resolve({ bookingId: id }) });
-    const webhook = (id: string, amountRefunded = 6299) => recordBookingChargeRefund({ bookingId: id, paymentIntentId: "pi_test_" + id,
-      mode: "test", fullyRefunded: amountRefunded === 6299, amountRefunded, chargeAmount: 6299 });
+    const settleRefund = async (id:string) => {
+      const call=calls.findLast(call=>call.params.metadata.bookingId===id); assert.ok(call);
+      const refund={id:"re_test_"+id,status:"succeeded",amount:call.params.amount,currency:"usd",payment_intent:call.params.payment_intent,charge:"ch_test_"+id,metadata:{...call.params.metadata}};
+      refunds.set(refund.id,refund); await observeBookingRefund(refund,"test");
+    };
+    const webhook = async (id: string, amountRefunded = 6299) => { await reconcileBookingRefundsForPayment("pi_test_"+id,"test",false); const result = await recordBookingChargeRefund({ bookingId: id, paymentIntentId: "pi_test_" + id,
+      mode: "test", fullyRefunded: amountRefunded === 6299, amountRefunded, chargeAmount: 6299 }); await reconcileBookingRefundsForPayment("pi_test_"+id,"test"); return result; };
     const payoutFixture = async () => {
       const f = await fixture(); await db.query("UPDATE booking_disputes SET status='resolved' WHERE id=$1", [f.dispute]);
       await db.query("UPDATE bookings SET payout_frozen_at=NULL,payout_freeze_reason=NULL,payment_release_status='awaiting_customer' WHERE id=$1", [f.id]); return f;
@@ -178,7 +186,26 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.equal(row.refunded_amount_cents, 6000); assert.equal(row.customer_service_fee_refunded_cents, 299); assert.equal(row.provider_payout_cents, 0);
       assert.equal(row.refund_failure_reason, null); assert.equal(await count("booking_events", id), 1); assert.equal(await count("notifications", id), 2);
       assert.equal((await full(id)).refunded, false); assert.equal(calls.length, 1);
-      assert.equal(calls[0].params.amount, 6299); assert.equal(calls[0].options.idempotencyKey, `booking-auto-refund-test-${id}`);
+      assert.equal(calls[0].params.amount, 6299); assert.equal(calls[0].options.idempotencyKey, `booking-refund-${id}-total-6299`);
+    });
+    await t.test("late failed full refund cannot resolve a different existing customer dispute", async () => {
+      const { id, dispute } = await fixture();
+      assert.equal((await full(id)).refunded, true);
+      const refund = refunds.get("re_test_" + id); assert.ok(refund);
+      refund.status = "failed";
+      await observeBookingRefund(refund, "test", true, true); // Fresh authoritative refund read, as in refund.updated handler.
+      const row = await booking(id);
+      assert.equal(row.payment_status, "refunded", "historical payment amount evidence remains preserved");
+      assert.equal(row.refund_status, "failed"); assert.ok(row.refund_failure_reason);
+      const operation = (await db.query("SELECT * FROM booking_refund_operations WHERE booking_id=$1", [id])).rows[0];
+      assert.ok(operation.settlement_issue_at); assert.equal(operation.dispute_id, null);
+      const response = await partial(dispute, 30, "customer");
+      assert.notEqual(response.status, 200);
+      assert.equal((await response.json()).reconciliationRequired, true);
+      assert.equal(await caseStatus(dispute), "open");
+      assert.equal(calls.length, 1); assert.equal(reversals.length, 0);
+      assert.equal((await db.query("SELECT count(*)::int n FROM notifications WHERE booking_id=$1 AND type='dispute_resolved'", [id])).rows[0].n, 0);
+      assert.equal((await db.query("SELECT count(*)::int n FROM admin_audit_log WHERE target_id=$1 AND action='disputes_resolved'", [dispute])).rows[0].n, 0);
     });
     for (const path of ["automatic", "partial", "customer"]) for (const status of ["pending", "failed", "canceled", "requires_action"]) {
       await t.test(`${path} ${status} is never called refunded or retried`, async () => {
@@ -197,9 +224,9 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       await t.test(`${path} ${code} and later partial webhook retain the operation claim`, async () => {
         const { id, dispute } = await fixture(); stripeError = Object.assign(new Error("Synthetic Stripe uncertainty"), { code });
         if (path === "automatic") assert.equal((await full(id)).ok, false);
-        else assert.equal((await partial(dispute)).status, code === "approval_required" ? 202 : 502);
+        else assert.equal((await partial(dispute)).status, 202);
         assert.equal((await booking(id)).refund_status, "processing");
-        await webhook(id, 1000); assert.equal((await booking(id)).refund_status, "refunded"); assert.ok((await booking(id)).refund_failure_reason);
+        await webhook(id, 1000); assert.equal((await booking(id)).refund_status, "processing"); assert.ok((await booking(id)).refund_failure_reason);
         await full(id); await partial(dispute); assert.equal(calls.length, 1);
         userId = "customer"; assert.equal((await manual(id, "request")).status, 409);
       });
@@ -215,8 +242,8 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       await db.query("UPDATE bookings SET refunded_amount_cents=1000,refund_status='requested' WHERE id=$1", [id]);
       duringRefund = async () => { await webhook(id, 1000); };
       if (code === "pending") refundStatus = "pending"; else stripeError = Object.assign(new Error("Synthetic uncertainty"), { code });
-      assert.equal((await manual(id)).status, code === "ECONNRESET" ? 502 : 202);
-      assert.equal((await booking(id)).refund_status, "refunded"); assert.ok((await booking(id)).refund_failure_reason);
+      assert.equal((await manual(id)).status, 202);
+      assert.equal((await booking(id)).refund_status, "processing"); assert.ok((await booking(id)).refund_failure_reason);
       await full(id); assert.equal((await partial(dispute, 10)).status, 409); assert.equal(calls.length, 1);
       assert.equal((await partial(dispute, 0, "provider")).status, 502);
       assert.equal(await caseStatus(dispute), "open"); assert.equal((await booking(id)).payout_freeze_reason, "Open booking dispute");
@@ -233,7 +260,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.equal((await full(id)).ok, true); assert.equal(calls.length, 1);
     });
     for (const path of ["automatic", "partial"]) await t.test(`${path} full webhook success survives a lost Stripe response`, async () => {
-      const { id, dispute } = await fixture(); duringRefund = async () => { await webhook(id); }; stripeError = new Error("Lost response");
+      const { id, dispute } = await fixture(); duringRefund = async () => { await settleRefund(id); await webhook(id); }; stripeError = new Error("Lost response");
       if (path === "automatic") await full(id); else await partial(dispute);
       const row = await booking(id); assert.equal(row.payment_status, "refunded"); assert.equal(row.refund_status, "refunded");
       assert.equal(row.refund_failure_reason, null); assert.equal(row.provider_payout_cents, 0); assert.equal(row.refunded_amount_cents, 6000);
@@ -241,10 +268,11 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     });
     await t.test("a stale partial response cannot regress a newer full webhook or reverse a stale target", async () => {
       const { id, dispute } = await fixture(); duringRefund = async () => { await webhook(id); };
-      assert.equal((await partial(dispute)).status, 502);
+      assert.equal((await partial(dispute)).status, 202);
       const row = await booking(id); assert.equal(row.refunded_amount_cents, 6000); assert.equal(row.customer_service_fee_refunded_cents, 299);
       assert.equal(row.provider_payout_cents, 0); assert.equal(row.refund_failure_reason, null); assert.equal(row.payment_release_status, "reversed");
-      assert.equal(reversals.length, 0); assert.equal(await count("notifications", id), 0);
+      assert.equal(reversals.length, 0); assert.equal((await db.query("SELECT count(*)::int n FROM notifications WHERE booking_id=$1 AND type='dispute_resolved'",[id])).rows[0].n, 0, "newer full cumulative evidence must prevent stale partial decision notices");
+      assert.equal(await caseStatus(dispute), "open");
     });
     for (const reason of ["Admin investigation", "Stripe chargeback under review"]) await t.test(`partial success preserves ${reason} ownership`, async () => {
       const { id, dispute } = await fixture(); await db.query("UPDATE bookings SET payout_freeze_reason=$2,payout_frozen_by='admin' WHERE id=$1", [id, reason]);
@@ -252,7 +280,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       assert.equal((await partial(dispute)).status, 200);
       const row = await booking(id); assert.equal(row.payout_freeze_reason, reason); assert.equal(row.payout_frozen_by, "admin");
       assert.deepEqual(row.payout_frozen_at, frozenAt); assert.equal(row.payment_release_status, "frozen"); assert.equal(row.provider_payout_cents, 2599);
-      assert.equal(await caseStatus(dispute), "resolved"); assert.equal(await count("booking_events", id), 1); assert.equal(await count("notifications", id), 2);
+      assert.equal(await caseStatus(dispute), "resolved"); assert.equal(await count("booking_events", id), 1); assert.equal(await count("notifications", id), 4, "two refund receipts plus two dispute-decision notices");
     });
     await t.test("another open dispute retains its hold after partial settlement", async () => {
       const { id, dispute } = await fixture(); await db.query("INSERT INTO booking_disputes(id,booking_id) VALUES($1,$2)", [randomUUID(), id]);
@@ -264,7 +292,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       const row = await booking(id); assert.equal(row.provider_payout_cents, 2599); assert.equal(row.refunded_amount_cents, 3000);
       assert.equal(row.payout_frozen_at, null); assert.equal(row.payout_freeze_reason, null); assert.equal(row.payment_release_status, "awaiting_customer");
       assert.equal(row.refund_failure_reason, null); assert.equal((await partial(dispute)).status, 409); assert.equal(calls.length, 1);
-      assert.equal(calls[0].options.idempotencyKey, `dispute-partial-refund-${dispute}-3000`);
+      assert.equal(calls[0].options.idempotencyKey, `booking-refund-${id}-total-3000`);
       await webhook(id, 3000); await webhook(id, 1000);
       assert.equal((await booking(id)).refund_failure_reason, null, "equal/older webhooks cannot recreate uncertainty after owned settlement");
       assert.equal((await booking(id)).provider_payout_cents, 2599);
@@ -282,7 +310,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       const { id, dispute } = await fixture(); await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing',payment_release_status='paid_out' WHERE id=$1", [id]);
       assert.equal((await partial(dispute)).status, 200);
       let row = await booking(id); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 2598);
-      assert.equal(reversals[0].params.amount, 2598); assert.equal(reversals[0].options.idempotencyKey, `dispute-partial-reversal-${dispute}-2598`);
+      assert.equal(reversals[0].params.amount, 2598); assert.equal(reversals[0].options.idempotencyKey, `booking-refund-recovery-test-${calls[0].params.metadata.refundOperationId}`);
       const nextDispute = randomUUID(); await db.query("INSERT INTO booking_disputes(id,booking_id) VALUES($1,$2)", [nextDispute, id]);
       assert.equal((await partial(nextDispute, 10)).status, 409);
       row = await booking(id); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 2598);
@@ -302,13 +330,13 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       reversalError = Object.assign(new Error("Synthetic recovery uncertainty"), { code });
       const response = await partial(dispute); assert.equal(response.status, 202); assert.equal((await response.json()).reconciliationRequired, true);
       const row = await booking(id); assert.equal(row.refund_status, "refunded"); assert.equal(row.refunded_amount_cents, 3000);
-      assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 0); assert.ok(row.refund_failure_reason); assert.match(row.payout_failure_reason, /not confirmed/);
-      assert.equal(await caseStatus(dispute), "open"); assert.equal(await count("notifications", id), 0);
+      assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 0); assert.equal(row.refund_failure_reason,null,"settled customer refund is distinct from pending provider recovery"); assert.match(row.payout_failure_reason, /not confirmed/);
+      assert.equal(await caseStatus(dispute), "open"); assert.equal(await count("notifications", id), 2,"confirmed refund receipts only, no dispute decision notices");
       assert.equal((await partial(dispute, 10)).status, 409); assert.equal(calls.length, 1); assert.equal(reversals.length, 1);
     });
     await t.test("confirmed full reversal survives the reversal response being lost", async () => {
       const { id, dispute } = await fixture(); await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing',payment_release_status='paid_out' WHERE id=$1", [id]);
-      duringReversal = async () => { await db.query("UPDATE bookings SET stripe_transfer_reversed_cents=5197,payment_release_status='reversed',payout_failure_reason=NULL WHERE id=$1", [id]); };
+      duringReversal = async () => { await db.query("UPDATE bookings SET stripe_transfer_reversed_cents=5197,payment_release_status='reversed',payout_failure_reason=NULL WHERE id=$1", [id]); await observeBookingRefundTransfer(await replacements["@/lib/stripe"].getStripe().transfers.retrieve("tr_test_existing"),"test"); };
       reversalError = new Error("Lost reversal response"); assert.equal((await partial(dispute)).status, 200);
       const row = await booking(id); assert.equal(row.provider_payout_cents, 5197); assert.equal(row.stripe_transfer_reversed_cents, 5197);
       assert.equal(row.payment_release_status, "reversed"); assert.equal(row.refund_failure_reason, null); assert.equal(row.payout_failure_reason, null);
@@ -316,21 +344,60 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
     for (const path of ["automatic", "partial"]) for (const sql of ["INSERT INTO booking_events", "INSERT INTO notifications", ...(path === "partial" ? ["INSERT INTO admin_audit_log"] : [])]) {
       await t.test(`${path} audit rollback at ${sql} preserves a durable non-retryable claim`, async () => {
         const { id, dispute } = await fixture(); failure = sql;
-        if (path === "automatic") assert.equal((await full(id)).ok, false); else assert.equal((await partial(dispute)).status, 502);
-        assert.equal(failure, ""); const row = await booking(id); assert.equal(row.refund_status, "processing"); assert.equal(row.refunded_amount_cents, 0);
-        assert.equal(row.provider_payout_cents, 5197); assert.ok(row.refund_failure_reason); assert.equal(await count("booking_events", id), 0); assert.equal(await count("notifications", id), 0);
-        await webhook(id, 1000); await full(id); await partial(dispute); assert.equal(calls.length, 1);
+        if (path === "automatic") assert.equal((await full(id)).ok, false); else assert.equal((await partial(dispute)).status, 202);
+        assert.equal(failure, ""); const row = await booking(id);
+        if (sql === "INSERT INTO admin_audit_log") {
+          assert.equal(row.refund_status, "refunded"); assert.equal(row.refunded_amount_cents, 3000);
+          assert.equal(row.provider_payout_cents, 2599); assert.equal(await count("booking_events", id), 1);
+          assert.equal(await count("notifications", id), 2, "confirmed refund receipts survive independent decision failure");
+          assert.equal(await caseStatus(dispute), "open");
+          await partial(dispute, 10); await full(id); assert.equal(calls.length, 1, "unresolved decision must not authorize a second financial intent");
+        } else {
+          assert.equal(row.refund_status, "processing"); assert.equal(row.refunded_amount_cents, 0);
+          assert.equal(row.provider_payout_cents, 5197); assert.ok(row.refund_failure_reason); assert.equal(await count("booking_events", id), 0); assert.equal(await count("notifications", id), 0);
+          await full(id); await partial(dispute,10); assert.equal(calls.length, 1, "no new operation while local effects remain pending");
+          await webhook(id,1000); assert.equal(calls.length,1,"read-only evidence recovers original operation");
+        }
       });
     }
     await t.test("partial webhook before local audit rollback remains authoritative but cannot unlock another refund", async () => {
       const { id, dispute } = await fixture(); duringRefund = async () => { await webhook(id, 3000); }; failure = "INSERT INTO admin_audit_log";
-      assert.equal((await partial(dispute)).status, 502); const row = await booking(id);
-      assert.equal(row.refunded_amount_cents, 3000); assert.equal(row.refund_status, "refunded"); assert.ok(row.refund_failure_reason); assert.equal(row.provider_payout_cents, 5197);
+      assert.equal((await partial(dispute)).status, 202); const row = await booking(id);
+      assert.equal(row.refunded_amount_cents, 3000); assert.equal(row.refund_status, "refunded"); assert.equal(row.provider_payout_cents, 2599);
+      assert.equal(await caseStatus(dispute), "open"); assert.equal(await count("notifications",id),2);
       await partial(dispute, 10); await full(id); assert.equal(calls.length, 1);
+    });
+    for (const outcome of ["partial", "customer"]) await t.test(outcome + " decision audit rollback recovers original intent once without another payment request", async () => {
+      const {id,dispute}=await fixture(); failure="INSERT INTO admin_audit_log";
+      assert.equal((await partial(dispute,30,outcome)).status,202);
+      assert.equal(await caseStatus(dispute),"open");
+      const op=(await db.query("SELECT * FROM booking_refund_operations WHERE booking_id=$1",[id])).rows[0];
+      assert.ok(op.refund_confirmed_at);assert.ok(op.effects_completed_at);assert.equal(op.decision_completed_at,null);
+      assert.equal((await partial(dispute,10,"partial")).status,409,"changed decision cannot create another operation");
+      await full(id);assert.equal(calls.length,1,"cross-path attempt remains blocked while original decision is pending");
+      assert.equal((await partial(dispute,30,outcome)).status,200);
+      assert.equal(await caseStatus(dispute),"resolved");
+      await reconcileBookingRefundsForPayment("pi_test_"+id,"test");
+      assert.equal((await partial(dispute,30,outcome)).status,409);
+      assert.equal(calls.length,1);assert.equal((await db.query("SELECT count(*)::int n FROM admin_audit_log WHERE target_id=$1 AND action='disputes_resolved'",[dispute])).rows[0].n,1);
+      assert.equal((await db.query("SELECT count(*)::int n FROM notifications WHERE booking_id=$1 AND type='dispute_resolved'",[id])).rows[0].n,2);
+    });
+    await t.test("new administrator review retains ownership when an older refund succeeds asynchronously", async () => {
+      const {id,dispute}=await fixture();refundStatus="pending";
+      assert.equal((await partial(dispute)).status,202);
+      await db.query("UPDATE booking_disputes SET status='reviewing',admin_note='Newer investigation',refund_operation_id=NULL WHERE id=$1",[dispute]);
+      const refund=refunds.get("re_test_"+id);refund.status="succeeded";
+      await reconcileBookingRefundsForPayment("pi_test_"+id,"test");
+      const current=(await db.query("SELECT * FROM booking_disputes WHERE id=$1",[dispute])).rows[0];
+      assert.equal(current.status,"reviewing");assert.equal(current.admin_note,"Newer investigation");assert.equal(current.refund_operation_id,null);
+      assert.equal((await booking(id)).refunded_amount_cents,3000);assert.equal(calls.length,1);
+      const op=(await db.query("SELECT decision_completed_at,last_error FROM booking_refund_operations WHERE booking_id=$1",[id])).rows[0];
+      assert.equal(op.decision_completed_at,null);assert.match(op.last_error,/decision changed/);
+      assert.equal((await db.query("SELECT count(*)::int n FROM notifications WHERE booking_id=$1 AND type='dispute_resolved'",[id])).rows[0].n,0);
     });
     await t.test("a payout winning before the partial claim prevents the stale refund snapshot", async () => {
       const { id, dispute } = await fixture(); beforeQuery = async (sql) => {
-        if (sql.includes("UPDATE bookings SET refund_status = 'processing'")) {
+        if (sql === "BEGIN") {
           beforeQuery = async () => {}; await db.query("UPDATE bookings SET stripe_transfer_id='tr_test_existing',payment_release_status='paid_out' WHERE id=$1", [id]);
         }
       };

@@ -27,15 +27,20 @@ test("affiliate architecture snapshots terms and keeps payout and reversal histo
 
 test("affiliate earnings are synchronized only after the provider payout succeeds", async () => {
   const payout = await readFile(new URL("../lib/payment-release.ts", import.meta.url), "utf8");
+  const finalization = await readFile(new URL("../lib/booking-payout-finalization.ts", import.meta.url), "utf8");
   const engine = await readFile(new URL("../lib/affiliates.ts", import.meta.url), "utf8");
   const reconciliation = await readFile(new URL("../lib/booking-payout-reconciliation.ts", import.meta.url), "utf8");
   const payoutMarkedPaid = payout.indexOf("const recorded = await recordBookingPayoutTransfer(");
   const evidenceCommitted = payout.indexOf('await client.query("COMMIT")', payoutMarkedPaid);
-  const affiliateSync = payout.indexOf("syncAffiliateCommissionForBooking(bookingId, client)");
+  const finalizeCall = payout.indexOf("await finalizeBookingPayoutInTransaction(bookingId, getStripeMode(), client)", evidenceCommitted);
+  const transferEvidence = finalization.indexOf("if (!booking?.stripe_transfer_id) return false");
+  const eligibleEvidence = finalization.indexOf("if (!booking.eligible && !booking.terminal) return false");
+  const affiliateSync = finalization.indexOf("await syncAffiliateCommissionForBooking(bookingId, client)");
 
   assert.ok(payoutMarkedPaid >= 0, "provider payout must be marked paid");
   assert.match(reconciliation, /WHEN payment_release_status = 'processing' THEN 'paid_out'/);
-  assert.ok(evidenceCommitted > payoutMarkedPaid && affiliateSync > evidenceCommitted, "affiliate earnings must be synced after provider payout evidence commits");
+  assert.ok(evidenceCommitted > payoutMarkedPaid && finalizeCall > evidenceCommitted, "payout finalization must run after transfer evidence commits");
+  assert.ok(transferEvidence >= 0 && eligibleEvidence > transferEvidence && affiliateSync > eligibleEvidence, "affiliate sync must verify recorded transfer and eligible/terminal state inside the finalization transaction");
   assert.match(engine, /booking_status === "completed"/);
   assert.match(engine, /payment_status === "paid"/);
   assert.match(engine, /\["paid_out", "partially_released"\]\.includes\(row\.payment_release_status\)/);

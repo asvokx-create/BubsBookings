@@ -4,13 +4,14 @@ import { auth } from "@/lib/auth";
 import { database } from "@/lib/database";
 import { checkAndRecordContent } from "@/lib/content-safety";
 import { enforceRateLimit, recordActivity } from "@/lib/request-security";
-import { getStripe, getStripeMode, isStripeReady } from "@/lib/stripe";
+import { getStripeMode, isStripeReady } from "@/lib/stripe";
 import { PLAN_ENTITLEMENTS, type ProviderPlan } from "@/lib/plans";
 import { hasAdminAccess } from "@/lib/admin";
 import { recordAnalytics } from "@/lib/analytics";
-import { syncAffiliateCommissionForBooking } from "@/lib/affiliates";
-import { BOOKING_REFUND_RECONCILIATION, recordPendingBookingRefund } from "@/lib/booking-refund-operations";
+import { BOOKING_REFUND_RECONCILIATION } from "@/lib/booking-refund-operations";
 import { BOOKING_PAYOUT_RECONCILIATION } from "@/lib/booking-payout-reconciliation";
+
+import { claimBookingRefundOperation, submitBookingRefundOperation } from "@/lib/booking-refund-finalization";
 
 type RefundAction = "request" | "approve" | "reject";
 
@@ -107,111 +108,18 @@ export async function POST(request: Request, context: { params: Promise<{ bookin
     && (booking.refunded_amount_cents > 0 || booking.stripe_transfer_reversed_cents > 0)) {
     return NextResponse.json({ error: "This transferred payment has earlier refund or recovery activity. Reconcile its remaining provider share before issuing another partial refund.", reconciliationRequired: true }, { status: 409 });
   }
-  const claimed = await database.query(`UPDATE bookings SET refund_status = 'processing', refund_amount_cents = $2, refund_failure_reason = $7
+  const claimed = await claimBookingRefundOperation({ bookingId, mode: getStripeMode(), origin: 'provider', actorUserId: session.user.id,
+    refundApplicationFee: booking.payment_flow !== 'held_transfer_v1' && PLAN_ENTITLEMENTS[booking.plan].bookingFeePercent > 0 },
+    client => client.query(`UPDATE bookings SET refund_status = 'processing', refund_amount_cents = $2, refund_failure_reason = $7
     WHERE id::text = $1 AND refund_status = 'requested'
       AND payment_release_status <> 'processing' AND payout_failure_reason IS DISTINCT FROM $8
       AND refunded_amount_cents = $3 AND customer_service_fee_refunded_cents = $4
       AND provider_payout_cents = $5 AND stripe_transfer_id IS NOT DISTINCT FROM $6::text
       AND stripe_transfer_reversed_cents = $9
-    RETURNING id`, [bookingId, amountCents, booking.refunded_amount_cents, booking.customer_service_fee_refunded_cents, booking.provider_payout_cents, booking.stripe_transfer_id, BOOKING_REFUND_RECONCILIATION, BOOKING_PAYOUT_RECONCILIATION, booking.stripe_transfer_reversed_cents]);
-  if (!claimed.rowCount) return NextResponse.json({ error: "This refund is already being processed." }, { status: 409 });
+    RETURNING id`, [bookingId, amountCents, booking.refunded_amount_cents, booking.customer_service_fee_refunded_cents, booking.provider_payout_cents, booking.stripe_transfer_id, BOOKING_REFUND_RECONCILIATION, BOOKING_PAYOUT_RECONCILIATION, booking.stripe_transfer_reversed_cents]));
+  if (!claimed) return NextResponse.json({ error: "This refund is already being processed." }, { status: 409 });
 
-  let stripeRefundCreated = false;
-  try {
-    const legacyDestinationCharge = booking.payment_flow !== "held_transfer_v1";
-    const hasApplicationFee = legacyDestinationCharge && PLAN_ENTITLEMENTS[booking.plan].bookingFeePercent > 0;
-    const totalRefunded = booking.refunded_amount_cents + amountCents;
-    const fullyRefunded = totalRefunded >= booking.price_cents;
-    const serviceFeeRefund = fullyRefunded
-      ? Math.max(0, booking.customer_service_fee_cents - booking.customer_service_fee_refunded_cents)
-      : 0;
-    const stripeRefundAmount = amountCents + serviceFeeRefund;
-    const refund = await getStripe().refunds.create({
-      payment_intent: booking.stripe_payment_intent_id,
-      amount: stripeRefundAmount,
-      ...(legacyDestinationCharge ? { reverse_transfer: true } : {}),
-      ...(hasApplicationFee ? { refund_application_fee: true } : {}),
-      metadata: { bookingId, approvedBy: session.user.id },
-    }, { idempotencyKey: `booking-refund-${bookingId}-total-${booking.refunded_amount_cents + booking.customer_service_fee_refunded_cents + stripeRefundAmount}` });
-    stripeRefundCreated = true;
-    // Accepted/pending refunds are not proof of settlement. Keep the claim so
-    // another request cannot issue a second refund while Stripe reconciles it.
-    if (refund.status !== "succeeded") {
-      await recordPendingBookingRefund(bookingId, BOOKING_REFUND_RECONCILIATION, refund.id);
-      return NextResponse.json({ error: "Stripe has not confirmed this refund as completed. Contact support before retrying.", reconciliationRequired: true }, { status: 202 });
-    }
-    let reversalFailure = "";
-    let reversedCents = booking.stripe_transfer_reversed_cents;
-    // This is the recorded provider payout after the final platform-fee cap
-    // and Stripe processing-cost allocation, not a recomputed plan fee.
-    const originalProviderShare = booking.provider_payout_cents;
-    if (!legacyDestinationCharge && booking.stripe_transfer_id) {
-      const targetReversal = fullyRefunded
-        ? booking.provider_payout_cents
-        : Math.max(0, booking.provider_payout_cents - Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / booking.price_cents));
-      const reversalAmount = Math.max(0, targetReversal - booking.stripe_transfer_reversed_cents);
-      if (reversalAmount > 0) {
-        try {
-          await getStripe().transfers.createReversal(booking.stripe_transfer_id, {
-            amount: reversalAmount,
-            metadata: { bookingId, kind: "refund_reversal", stripeRefundId: refund.id },
-          }, { idempotencyKey: `booking-reversal-${bookingId}-total-${targetReversal}` });
-          reversedCents += reversalAmount;
-        } catch (reversalError) {
-          console.error("Stripe transfer reversal failed after refund", reversalError);
-          reversalFailure = "The customer was refunded, but provider transfer recovery is not confirmed. Admin review is required before retrying recovery.";
-        }
-      }
-    }
-    const adjustedHeldPayout = !legacyDestinationCharge && !booking.stripe_transfer_id
-      ? Math.max(0, Math.round(originalProviderShare * (booking.price_cents - totalRefunded) / remainingRefundable))
-      : booking.provider_payout_cents;
-    const settled = await database.query<{ payout_failure_reason: string | null }>(`UPDATE bookings SET refund_status = 'refunded', stripe_refund_id = $2,
-      refund_failure_reason = NULL,
-      refunded_amount_cents = GREATEST(refunded_amount_cents, $3),
-      customer_service_fee_refunded_cents = GREATEST(customer_service_fee_refunded_cents, $8),
-      refunded_at = now(), payment_status = CASE WHEN $4 THEN 'refunded' ELSE payment_status END,
-      provider_payout_cents = LEAST(provider_payout_cents, $5), stripe_transfer_reversed_cents = GREATEST(stripe_transfer_reversed_cents, $6),
-      payment_release_status = CASE
-        WHEN stripe_transfer_id IS NOT NULL AND stripe_transfer_reversed_cents >= provider_payout_cents THEN 'reversed'
-        WHEN stripe_transfer_id IS NOT NULL AND $7 <> '' THEN payment_release_status
-        WHEN $4 THEN 'reversed'
-        WHEN (payout_frozen_at IS NOT NULL OR payout_freeze_reason IS NOT NULL)
-          AND COALESCE(payout_freeze_reason, '') NOT IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN 'frozen'
-        WHEN stripe_transfer_id IS NOT NULL THEN 'partially_released'
-        WHEN status = 'completed' THEN 'awaiting_customer'
-        ELSE 'secured' END,
-      payout_frozen_at = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_frozen_at END,
-      payout_frozen_by = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_frozen_by END,
-      payout_freeze_reason = CASE WHEN payout_freeze_reason IN ('Refund requested', 'Stripe refund requires payout reconciliation') THEN NULL ELSE payout_freeze_reason END,
-      payout_failure_reason = CASE WHEN stripe_transfer_id IS NOT NULL AND stripe_transfer_reversed_cents >= provider_payout_cents THEN NULL ELSE NULLIF($7, '') END
-      WHERE id::text = $1 AND refunded_amount_cents <= $3
-        AND customer_service_fee_refunded_cents <= $8
-      RETURNING id, payout_failure_reason`, [bookingId, refund.id, totalRefunded, fullyRefunded, adjustedHeldPayout, reversedCents, reversalFailure, booking.customer_service_fee_refunded_cents + serviceFeeRefund]);
-    if (!settled.rowCount) {
-      return NextResponse.json({ error: "Stripe completed the refund, but newer refund activity needs reconciliation. Contact support before retrying.", reconciliationRequired: true }, { status: 202 });
-    }
-    await syncAffiliateCommissionForBooking(bookingId);
-    await database.query(`INSERT INTO booking_events (booking_id, actor_user_id, event_type, message, metadata)
-      VALUES ($1::uuid, $2, 'refunded', $3, jsonb_build_object('amountCents', $4::integer, 'serviceFeeRefundCents', $5::integer, 'stripeRefundId', $6::text))`, [bookingId, session.user.id, `$${(stripeRefundAmount / 100).toFixed(2)} refund approved through Stripe.`, stripeRefundAmount, serviceFeeRefund, refund.id]);
-    await database.query(`INSERT INTO notifications (user_id, booking_id, type, title, message, href, dedupe_key)
-      VALUES ($1, $2::uuid, 'refund_approved', 'Refund approved', $3, '/account/bookings/' || $2::uuid::text,
-      'refund-approved-' || $2::uuid::text || '-' || extract(epoch from now())::bigint)`, [booking.customer_id, bookingId, `${booking.provider_name} approved a $${(stripeRefundAmount / 100).toFixed(2)} refund. Stripe will return it to the original payment method.`]);
-    await recordActivity({ userId: session.user.id, action: "refund_approved", targetType: "booking", targetId: bookingId, metadata: { amountCents: stripeRefundAmount, serviceFeeRefundCents: serviceFeeRefund } });
-    await recordAnalytics({ eventName: "refund_completed", userId: session.user.id, targetType: "booking", targetId: bookingId, metadata: { amountCents: stripeRefundAmount, serviceFeeRefundCents: serviceFeeRefund } });
-    return NextResponse.json({ ok: true, amount: stripeRefundAmount / 100, reversalNeedsReview: Boolean(reversalFailure) && Boolean(settled.rows[0].payout_failure_reason) });
-  } catch (error) {
-    console.error("Stripe refund requires reconciliation", error);
-    const approvalRequired = typeof error === "object" && error !== null && "code" in error && error.code === "approval_required";
-    // A transport error may hide a successful Stripe operation. A later local
-    // failure must never downgrade webhook-confirmed settlement or allow a retry.
-    await recordPendingBookingRefund(bookingId, approvalRequired
-      ? "Stripe approval is pending. Do not retry the refund while approval is under review."
-      : BOOKING_REFUND_RECONCILIATION);
-    return NextResponse.json({ error: approvalRequired
-      ? "Stripe approval is pending. Do not retry the refund while approval is under review."
-      : stripeRefundCreated
-      ? "Stripe accepted the refund, but local reconciliation is incomplete. Contact support before retrying."
-      : "The refund outcome could not be confirmed. Contact support before retrying.", reconciliationRequired: true }, { status: approvalRequired ? 202 : 502 });
-  }
+  const refund = await submitBookingRefundOperation(claimed.operation.id);
+  if (!refund.ok) return NextResponse.json({ error: refund.error, reconciliationRequired: true }, { status: 202 });
+  return NextResponse.json({ ok: true, amount: refund.amount / 100, reversalNeedsReview: refund.recoveryNeedsReview });
 }

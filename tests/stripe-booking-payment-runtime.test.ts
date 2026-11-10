@@ -154,6 +154,7 @@ for (const postgres of [false, true]) test(`${postgres ? "PostgreSQL" : "PGlite"
       INSERT INTO services (id,provider_id,slug,category,title,description,price_cents,duration_minutes) VALUES ('00000000-0000-4000-8000-000000000002','00000000-0000-4000-8000-000000000001','repair','repair','Repair','Repair service',6000,60);`);
     await db.exec(readFileSync("database/migrations/111_hourly_projects.sql", "utf8"));
     await db.exec(readFileSync("database/migrations/112_booking_payout_finalizations.sql", "utf8"));
+    await db.exec(readFileSync("database/migrations/113_booking_refund_operations.sql", "utf8"));
     const { POST } = load("@/app/api/stripe/webhook/route") as { POST: (request: Request) => Promise<Response> };
     const { recordBookingChargeRefund } = load("@/lib/booking-refund-reconciliation");
     const fixture = async (hourly = true) => {
