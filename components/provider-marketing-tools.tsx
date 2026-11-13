@@ -1,5 +1,6 @@
 "use client";
 
+import type { ProviderActivation } from "@/components/provider-activation-checklist";
 import Link from "next/link";
 import { useRef, useState } from "react";
 import QRCode from "react-qr-code";
@@ -27,12 +28,15 @@ function safeFilename(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "listing";
 }
 
-export default function ProviderMarketingTools({ services, providerProfile, plan }: { services: MarketingService[]; providerProfile: { slug: string; name: string; visible: boolean } | null; plan: ProviderPlan }) {
+export default function ProviderMarketingTools({ services, providerProfile, plan, activation }: { activation?: ProviderActivation; services: MarketingService[]; providerProfile: { slug: string; name: string; visible: boolean } | null; plan: ProviderPlan }) {
   const [selectedId, setSelectedId] = useState(services[0]?.id ?? "");
   const [downloadError, setDownloadError] = useState("");
   const qrRef = useRef<HTMLDivElement>(null);
   const profileQrRef = useRef<HTMLDivElement>(null);
   const selected = services.find((service) => service.id === selectedId) ?? services[0];
+  const listingPublic = activation?.listings.find((item) => item.id === selected?.id)?.publiclyAvailable === true;
+  const profilePublic = providerProfile?.visible && activation?.ageVerificationStatus === "verified" && Boolean(activation?.publicListingCount);
+  const privateMessage = activation?.ageVerificationStatus !== "verified" ? "Verify age to activate this link." : "Complete listing activation to activate this link.";
   const listingUrl = selected ? `${publicSiteUrl}/services/${selected.slug}` : "";
   const profileUrl = providerProfile ? `${publicSiteUrl}/providers/${providerProfile.slug}` : "";
 
@@ -50,7 +54,7 @@ export default function ProviderMarketingTools({ services, providerProfile, plan
   }
 
   function downloadQrCode() {
-    if (!selected || !qrRef.current) return;
+    if (!listingPublic || !selected || !qrRef.current) return;
     downloadQr(qrRef.current, `${safeFilename(selected.title)}-bubsbookings-qr.png`);
   }
 
@@ -75,7 +79,8 @@ export default function ProviderMarketingTools({ services, providerProfile, plan
       <span className="w-fit rounded-full bg-[#e7eee2] px-4 py-2 text-xs font-bold">Included with every provider plan</span>
     </div>
 
-    {providerProfile && <section className="mt-7 rounded-[2rem] border border-[#183126]/10 bg-white p-6 shadow-[0_8px_32px_rgba(24,49,38,.06)] sm:p-8"><div className="grid gap-6 md:grid-cols-[auto_1fr] md:items-center"><div ref={profileQrRef} className="mx-auto h-[164px] w-[164px] rounded-2xl bg-white p-2"><QRCode value={profileUrl} size={148} level="H" bgColor="#ffffff" fgColor="#183126" aria-label={`QR code for ${providerProfile.name} provider profile`} /></div><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#718078]">Provider profile QR · separate from listing QR codes</p><h2 className="mt-2 text-2xl font-bold">Share your complete provider profile</h2><p className="mt-2 break-all text-sm text-[#687a70]">{profileUrl}</p>{!providerProfile.visible && <p className="mt-2 text-sm font-bold text-[#9b4934]">Your public profile is currently hidden. Turn it on in Public profile before sharing.</p>}<div className="mt-4 flex flex-wrap gap-2"><ListingShareButton providerSlug={providerProfile.slug} title={providerProfile.name} /><button type="button" onClick={() => downloadQr(profileQrRef.current, `${safeFilename(providerProfile.name)}-provider-profile-qr.png`)} className="min-h-11 rounded-full bg-[#183126] px-5 py-2.5 text-sm font-bold text-white">Download profile QR</button><Link href={`/providers/${providerProfile.slug}?preview=owner`} target="_blank" className="inline-flex min-h-11 items-center px-2 text-sm font-bold underline underline-offset-4">View my page ↗</Link></div></div></div></section>}
+    {providerProfile && !profilePublic && <p role="status" className="mt-7 rounded-2xl bg-white p-5">Your provider profile is private. Complete activation and turn on your public profile before sharing.</p>}
+    {providerProfile && profilePublic && <section className="mt-7 rounded-[2rem] border border-[#183126]/10 bg-white p-6 shadow-[0_8px_32px_rgba(24,49,38,.06)] sm:p-8"><div className="grid gap-6 md:grid-cols-[auto_1fr] md:items-center"><div ref={profileQrRef} className="mx-auto h-[164px] w-[164px] rounded-2xl bg-white p-2"><QRCode value={profileUrl} size={148} level="H" bgColor="#ffffff" fgColor="#183126" aria-label={`QR code for ${providerProfile.name} provider profile`} /></div><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#718078]">Provider profile QR · separate from listing QR codes</p><h2 className="mt-2 text-2xl font-bold">Share your complete provider profile</h2><p className="mt-2 break-all text-sm text-[#687a70]">{profileUrl}</p>{!providerProfile.visible && <p className="mt-2 text-sm font-bold text-[#9b4934]">Your public profile is currently hidden. Turn it on in Public profile before sharing.</p>}<div className="mt-4 flex flex-wrap gap-2"><ListingShareButton providerSlug={providerProfile.slug} title={providerProfile.name} /><button type="button" onClick={() => downloadQr(profileQrRef.current, `${safeFilename(providerProfile.name)}-provider-profile-qr.png`)} className="min-h-11 rounded-full bg-[#183126] px-5 py-2.5 text-sm font-bold text-white">Download profile QR</button><Link href={`/providers/${providerProfile.slug}?preview=owner`} target="_blank" className="inline-flex min-h-11 items-center px-2 text-sm font-bold underline underline-offset-4">View my page ↗</Link></div></div></div></section>}
 
     <div className="mt-8 grid gap-5 xl:grid-cols-[.82fr_1.18fr]">
       <section className="rounded-[2rem] bg-[#183126] p-6 text-white sm:p-8">
@@ -96,16 +101,17 @@ export default function ProviderMarketingTools({ services, providerProfile, plan
         <div className="mt-5">
           <p className="text-xs font-bold uppercase tracking-[.12em] text-[#acc0b5]">Your direct link</p>
           <div className="mt-2 break-all rounded-2xl border border-white/10 bg-[#0f271d] p-4 text-sm text-[#eef5f0]">{listingUrl}</div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {!listingPublic && <p role="status" className="mt-3 font-bold">{privateMessage} Copy, Share and QR downloads are unavailable while this listing is private.</p>}
+          {listingPublic && <div className="mt-3 grid gap-2 sm:grid-cols-2">
             <ListingShareButton action="copy" serviceId={selected.id} slug={selected.slug} title={selected.title} className="!border-0 !bg-[#eee25a] !text-[#183126] hover:!bg-[#f7ed74]" />
             <ListingShareButton serviceId={selected.id} slug={selected.slug} title={selected.title} description={`Check out ${selected.title} by ${selected.businessName} on BubsBookings.`} className="!border-white/20 !bg-transparent !text-white hover:!border-white/40 hover:!bg-white/10" />
-          </div>
-          <Link href={`/services/${selected.slug}`} target="_blank" className="mt-4 inline-flex text-sm font-bold text-[#eee25a] underline decoration-[#eee25a]/60 underline-offset-4">Preview public listing ↗</Link>
+          </div>}
+          {listingPublic && <Link href={`/services/${selected.slug}`} target="_blank" className="mt-4 inline-flex text-sm font-bold text-[#eee25a] underline decoration-[#eee25a]/60 underline-offset-4">Preview public listing ↗</Link>}
           <div className="mt-5 grid grid-cols-2 gap-2 text-center text-xs"><div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-lg font-bold text-white">{selected.viewCount.toLocaleString()}</p><p className="mt-1 text-[#c2d0c8]">public views</p></div><div className="rounded-xl border border-white/10 bg-white/5 p-3"><p className="text-lg font-bold text-white">{selected.completedBookingCount.toLocaleString()}</p><p className="mt-1 text-[#c2d0c8]">completed bookings</p></div></div>
         </div>
       </section>
 
-      <section className="rounded-[2rem] border border-[#183126]/10 bg-white p-6 shadow-[0_8px_32px_rgba(24,49,38,.06)] sm:p-8">
+      {listingPublic && <section className="rounded-[2rem] border border-[#183126]/10 bg-white p-6 shadow-[0_8px_32px_rgba(24,49,38,.06)] sm:p-8">
         <div className="grid gap-7 md:grid-cols-[auto_1fr] md:items-center">
           <div className="mx-auto rounded-[1.75rem] border border-[#183126]/10 bg-white p-5 shadow-[0_8px_28px_rgba(24,49,38,.08)]">
             <div ref={qrRef} className="h-[220px] w-[220px] bg-white p-1">
@@ -126,7 +132,7 @@ export default function ProviderMarketingTools({ services, providerProfile, plan
           <div className="rounded-2xl bg-[#f5f5ef] p-4"><p className="font-bold">Print at 1 inch or larger</p><p className="mt-1 text-xs leading-5 text-[#718078]">Ideal for business cards, flyers, signs, and menus.</p></div>
           <div className="rounded-2xl bg-[#f5f5ef] p-4"><p className="font-bold">Test before ordering</p><p className="mt-1 text-xs leading-5 text-[#718078]">Scan a proof with your phone before a large print run.</p></div>
         </div>
-      </section>
+      </section>}
     </div>
     <ProviderCouponManager services={services.map(({id,title})=>({id,title}))} allowed={plan !== "starter"} />
     <ProviderCampaignManager />

@@ -65,6 +65,17 @@ export function calculateHourlyBasePriceCents(hourlyRateCents: number, durationM
   return result;
 }
 
+/** Draft form values are incomplete while typing; never throw from a render preview. */
+export function previewHourlyBasePriceCents(hourlyRateCents: number, durationMinutes: number): number | null {
+  if (!Number.isSafeInteger(hourlyRateCents) || hourlyRateCents < 50 || hourlyRateCents > 100_000_000
+    || !Number.isSafeInteger(durationMinutes) || durationMinutes <= 0) return null;
+  try {
+    return calculateHourlyBasePriceCents(hourlyRateCents, durationMinutes);
+  } catch {
+    return null;
+  }
+}
+
 export function calculateServiceBasePriceCents(config: ServicePricingConfig, durationMinutes?: number) {
   if (config.pricingType === "FIXED") {
     requireSafeInteger(config.priceCents, "Service price", 0);
