@@ -3,10 +3,11 @@ import "server-only";
 import type Stripe from "stripe";
 import { isAtLeastEighteen } from "./age-eligibility";
 import { database } from "./database";
-import { getStripe, getStripeMode } from "./stripe";
+import { getStripe, getStripeMode, getStripeIdentityResults } from "./stripe";
 import { markAffiliateListingPublished } from "./affiliates";
 import { recordAnalytics } from "./analytics";
 import { sendTransactionalEmail } from "./email";
+import { identityResultsError } from "./stripe-identity-config";
 
 export type ProviderAgeVerificationStatus = "not_started" | "pending" | "requires_input" | "verified" | "failed";
 
@@ -27,7 +28,11 @@ export function ageVerificationStatusForStripeSession(session: Stripe.Identity.V
 
 function dobFromVerifiedSession(session: Stripe.Identity.VerificationSession) {
   const dob = session.verified_outputs?.dob;
-  if (!dob || !dob.year || !dob.month || !dob.day) return null;
+  if (!dob || typeof dob.year !== "number" || typeof dob.month !== "number" || typeof dob.day !== "number"
+      || !Number.isInteger(dob.year) || !Number.isInteger(dob.month) || !Number.isInteger(dob.day)) return null;
+  const date = new Date(Date.UTC(dob.year, dob.month - 1, dob.day));
+  if (date.getUTCFullYear() !== dob.year || date.getUTCMonth() + 1 !== dob.month
+      || date.getUTCDate() !== dob.day || date.getTime() > Date.now()) return null;
   return `${String(dob.year).padStart(4, "0")}-${String(dob.month).padStart(2, "0")}-${String(dob.day).padStart(2, "0")}`;
 }
 
@@ -172,20 +177,35 @@ export async function syncProviderAgeVerificationFromStripe(sessionId: string) {
   // by reconciliation. New exceptions cannot be created by the admin API.
   if (provider.age_verification_source === "admin_exception") return "verified" as const;
 
-  const session = await getStripe().identity.verificationSessions.retrieve(sessionId, { expand: ["verified_outputs"] });
+  let session = await getStripe().identity.verificationSessions.retrieve(sessionId);
   if (!sessionBelongsToProvider(session, provider.id, mode)) {
     console.error("Stripe Identity session ownership did not match the provider", { providerId: provider.id, sessionId });
     return null;
   }
 
   if (session.status === "verified") {
+    // DOB is a separately gated field. Expanding verified_outputs alone omits it.
+    // Sanitize errors so SDK request/response details cannot reach logs or users.
+    try {
+      session = await getStripeIdentityResults().identity.verificationSessions.retrieve(sessionId, {
+        expand: ["verified_outputs.dob"],
+      });
+    } catch {
+      throw identityResultsError();
+    }
+    if (!sessionBelongsToProvider(session, provider.id, mode) || session.status !== "verified") {
+      throw identityResultsError();
+    }
     const dob = dobFromVerifiedSession(session);
+    // An integration/access failure is not proof of ineligibility. Keep the gate
+    // closed, preserve the session for reconciliation, and do not demand another ID.
+    if (!dob) throw identityResultsError();
     if (dob && isAtLeastEighteen(dob)) {
       await setProviderAgeVerification(provider.id, "verified");
       return "verified" as const;
     }
-    // A document that did not supply a usable DOB cannot establish eligibility.
-    await setProviderAgeVerification(provider.id, "failed", dob ? "underage" : "date_of_birth_unavailable");
+    // A verified, usable DOB is required before deciding age eligibility.
+    await setProviderAgeVerification(provider.id, "failed", "underage");
     return "failed" as const;
   }
 
@@ -206,8 +226,11 @@ export async function startProviderAgeVerification(input: { providerId: string; 
     return { status: "verified" as const, url: null };
   }
 
+  // Reject absent/wrong-mode key configuration before requesting a new document.
+  // Actual read permissions require a synthetic verification test before rollout.
+  try { getStripeIdentityResults(); } catch { throw identityResultsError(); }
   if (provider.stripe_identity_verification_session_id && provider.stripe_identity_verification_mode === mode) {
-    const session = await getStripe().identity.verificationSessions.retrieve(provider.stripe_identity_verification_session_id, { expand: ["verified_outputs"] });
+    const session = await getStripe().identity.verificationSessions.retrieve(provider.stripe_identity_verification_session_id);
     if (sessionBelongsToProvider(session, provider.id, mode)) {
       const status = await syncProviderAgeVerificationFromStripe(session.id);
       if (status === "verified") return { status, url: null };
