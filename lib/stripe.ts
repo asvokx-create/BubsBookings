@@ -1,6 +1,7 @@
 import "server-only";
 
 import Stripe from "stripe";
+import { identityResultsKey } from "./stripe-identity-config";
 let stripeClient: Stripe | null = null;
 
 export function getStripe() {
@@ -23,4 +24,11 @@ export function stripeConfiguration() {
 
 export function isStripeReady() {
   return Object.values(stripeConfiguration()).every(Boolean);
+}
+
+// Only this dedicated, least-privilege reader may request sensitive age results.
+// Do not replace the payments key or log this key or returned identity data.
+export function getStripeIdentityResults() {
+  const key = identityResultsKey(process.env.STRIPE_IDENTITY_RESTRICTED_KEY, getStripeMode());
+  return new Stripe(key, { timeout: 15_000, maxNetworkRetries: 1 });
 }

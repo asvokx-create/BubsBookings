@@ -14,7 +14,7 @@ test("provider document age verification uses calendar eligibility without persi
   assert.equal(isAtLeastEighteen("2008-10-14", boundary), false);
 
   const verification = read("lib/provider-age-verification.ts");
-  assert.match(verification, /identity\.verificationSessions\.retrieve\(sessionId, \{ expand: \["verified_outputs"\] \}\)/);
+  assert.match(verification, /expand: \["verified_outputs\.dob"\]/);
   assert.match(verification, /if \(dob && isAtLeastEighteen\(dob\)\)/);
   assert.match(verification, /never persisted or logged/);
   assert.doesNotMatch(verification, /INSERT INTO .*date_of_birth/i);
@@ -150,7 +150,7 @@ test("Identity webhooks are signed, idempotent, mode-bound, and reconcile curren
   assert.match(webhook, /identity\.verification_session\.canceled/);
   assert.match(webhook, /identity\.verification_session\.redacted/);
   assert.match(security, /constructEvent\(payload, signature, secret\)/);
-  assert.match(verification, /verificationSessions\.retrieve\(sessionId, \{ expand: \["verified_outputs"\] \}\)/);
+  assert.match(verification, /expand: \["verified_outputs\.dob"\]/);
 });
 
 test("provider verification and listing eligibility update in database transactions", () => {

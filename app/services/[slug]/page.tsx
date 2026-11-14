@@ -21,13 +21,15 @@ import { deliveryLabel } from "@/lib/service-delivery";
 import UiIcon from "@/components/ui-icon";
 import { formatHourlyRate } from "@/lib/service-pricing";
 import { absolutePublicUrl, metadataDescription } from "@/lib/seo";
+import { getOwnerPrivateListingStatus } from "@/lib/private-listing-status";
+import UnavailableListing from "./unavailable-listing";
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: PageProps<"/services/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const service = await getServiceBySlug(slug);
-  if (!service) notFound();
+  if (!service) return { title: "Listing unavailable", description: "This listing is not currently available.", robots: { index: false, follow: false } };
   const placeDescription = service.deliveryType === "REMOTE" ? "Available remotely across the United States." : `Available in ${service.city}, ${service.state}.`;
   const priceLabel = service.pricingType === "QUOTE_ONLY" ? "Personalized quote available" : service.pricingType === "HOURLY" && service.hourlyRateCents !== null ? formatHourlyRate(service.hourlyRateCents) : `starting at $${service.price}`;
   const description = metadataDescription([`Explore ${service.title} from ${service.provider}.`, placeDescription, `${priceLabel}.`, service.description]);
@@ -54,8 +56,12 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
   const servicesReturnPath = validMarketplaceReturn ? returnPathValue : "/#nearby-listings";
   const parentBookingId = typeof query.repeatOf === "string" ? query.repeatOf : "";
   const service = await getServiceBySlug(slug);
-  if (!service) notFound();
   const session = isAuthConfigured() ? await auth.api.getSession({ headers: await headers() }) : null;
+  if (!service) {
+    const ownerStatus = session?.user?.id ? await getOwnerPrivateListingStatus(slug, session.user.id) : null;
+    if (ownerStatus) return <UnavailableListing ownerStatus={ownerStatus} />;
+    notFound();
+  }
 
   const visual = getServiceVisual(service.category);
   const duration = formatDuration(service.durationMinutes);
