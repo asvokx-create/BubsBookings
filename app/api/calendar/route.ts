@@ -1,3 +1,4 @@
+import { MANUAL_JOB_PREFIX } from "@/lib/manual-job";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
@@ -58,7 +59,7 @@ export async function GET(request: Request) {
      ORDER BY event.starts_at`, [session.user.id])).rows : [];
   return NextResponse.json({ staff, events: [...result.rows.map((row) => ({ id: row.id, kind: "booking", title: row.title, person: row.person,
     startsAt: row.starts_at, endsAt: row.ends_at, location: row.location, status: row.status,
-    assignedTeamMemberId: row.assigned_team_member_id, assignedTeamMemberIds: row.assigned_team_member_ids.length ? row.assigned_team_member_ids : [row.assigned_team_member_id ?? "owner"], assigneeName: row.assignee_name })), ...timeOff.map((block) => ({ id: block.id, kind: "time_off", title: block.reason,
+    assignedTeamMemberId: row.assigned_team_member_id, assignedTeamMemberIds: row.assigned_team_member_ids.length ? row.assigned_team_member_ids : [row.assigned_team_member_id ?? "owner"], assigneeName: row.assignee_name })), ...timeOff.map((block) => ({ id: block.id, kind: block.reason.startsWith(MANUAL_JOB_PREFIX) ? "manual_job" : "time_off", title: block.reason.startsWith(MANUAL_JOB_PREFIX) ? block.reason.slice(MANUAL_JOB_PREFIX.length) : block.reason,
       person: block.assignee_name, startsAt: block.starts_at, endsAt: block.ends_at, location: "Unavailable", status: "blocked",
       assignedTeamMemberId: block.member_id, assignedTeamMemberIds: [block.member_id ?? "owner"], assigneeName: block.assignee_name })),
     ...calendly.map((event) => ({ id: event.id, kind: "calendly", title: event.title, person: "Calendly",

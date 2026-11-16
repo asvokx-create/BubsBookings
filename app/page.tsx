@@ -133,7 +133,10 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         <div className="premium-hero-content site-container px-4 sm:px-6">
           <div className="premium-hero-copy">
             <h1 id="premium-home-heading">Get things <span>done.</span></h1>
-            <p>Book local and online service providers for anything you need.</p>
+            <p className="premium-hero-description">Book local and online service providers for anything you need.</p>
+            <Link href="/providers/join" className="premium-hero-provider-cta">
+              List your business free <UiIcon name="arrow-right" className="h-4 w-4 shrink-0" />
+            </Link>
           </div>
         </div>
 
