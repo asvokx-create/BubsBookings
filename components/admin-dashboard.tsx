@@ -5,7 +5,7 @@ import BrandLockup from "@/components/brand-lockup";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { authClient } from "@/lib/auth-client";
 import ProfileAvatar from "@/components/profile-avatar";
@@ -130,7 +130,7 @@ type AccountDetails = {
   complimentaryPro: null | { active: boolean; grantId: string | null; startsAt: string | null; expiresAt: string | null; lifetime: boolean; reason: string | null };
   complimentaryProHistory: Array<{ id: string; grant_id: string; action: string; reason: string | null; previous_expires_at: string | null; new_expires_at: string | null; created_at: string; actor_name: string }>;
   counts: { bookings: number; listings: number; reviews: number; safety_reports: number; disputes: number; support_requests: number };
-  services: Array<{ id: string; slug: string; title: string; category: string; business_name: string; price_cents: number; duration_minutes: number; pricing_type: "FIXED" | "HOURLY" | "QUOTE_ONLY"; hourly_rate_cents: number | null; minimum_duration_minutes: number | null; is_active: boolean; created_at: string }>;
+  services: Array<{ id: string; slug: string; title: string; category: string; business_name: string; price_cents: number; duration_minutes: number; pricing_type: "FIXED" | "HOURLY" | "QUOTE_ONLY"; hourly_rate_cents: number | null; minimum_duration_minutes: number | null; is_active: boolean; publicly_visible: boolean; activation_email_status: string | null; created_at: string }>;
   bookings: Array<{ id: string; service_title: string; status: string; payment_status: string; price_cents: number; starts_at: string; created_at: string; other_party_name: string; account_role: string }>;
   reviews: Array<{ id: string; rating: number; body: string; is_hidden: boolean; created_at: string; service_title: string; customer_name: string; relationship: string }>;
   reports: Array<{ id: string; category: string; details: string; status: string; created_at: string; reporter_name: string; reported_name: string; relationship: string }>;
@@ -198,6 +198,8 @@ export default function AdminDashboard({ adminName, adminImage = "" }: { adminNa
   const [moderationStatusFilter, setModerationStatusFilter] = useState("all");
   const [pendingAction, setPendingAction] = useState<AdminActionOptions | null>(null);
   const [selectedStatId, setSelectedStatId] = useState<string | null>(null);
+  const activeAccountId = useRef<string | null>(null);
+  const accountRequestVersion = useRef(0);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [accountDetails, setAccountDetails] = useState<AccountDetails | null>(null);
   const [accountDetailsLoading, setAccountDetailsLoading] = useState(false);
@@ -279,18 +281,28 @@ export default function AdminDashboard({ adminName, adminImage = "" }: { adminNa
   }
 
   async function openAccount(account: Account) {
+    activeAccountId.current = account.id;
+    const version = ++accountRequestVersion.current;
     setSelectedAccount(account);
     setAccountDetails(null);
     setAccountDetailsError("");
     setAccountDetailsLoading(true);
     const response = await fetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, { cache: "no-store" }).catch(() => null);
     const result = response ? await response.json() as AccountDetails & { error?: string } : null;
+    if (version !== accountRequestVersion.current || activeAccountId.current !== account.id) return;
     if (!response?.ok || !result) setAccountDetailsError(result?.error ?? "The account details could not be loaded.");
     else setAccountDetails(result);
     setAccountDetailsLoading(false);
   }
 
+  async function refreshAccount(account: Account) {
+    if (activeAccountId.current !== account.id) return;
+    await openAccount(account);
+  }
+
   function closeAccount() {
+    activeAccountId.current = null;
+    accountRequestVersion.current++;
     setSelectedAccount(null);
     setAccountDetails(null);
     setAccountDetailsError("");
@@ -619,7 +631,7 @@ return <article key={listing.id} className="rounded-[1.7rem] border border-[#183
         </section>
       </div>
       {selectedStat && <AdminStatDialog stat={selectedStat} onClose={() => setSelectedStatId(null)} onOpenSection={(nextSection) => { setSelectedStatId(null); selectSection(nextSection, selectedStat.id === "providers" ? "active_providers" : "all"); }} />}
-      {selectedAccount && <AccountDetailDialog account={selectedAccount} details={accountDetails} loading={accountDetailsLoading} error={accountDetailsError} onClose={closeAccount} onRetry={() => openAccount(selectedAccount)} onDashboardRefresh={load} />}
+      {selectedAccount && <AccountDetailDialog key={selectedAccount.id} account={selectedAccount} details={accountDetails} loading={accountDetailsLoading} error={accountDetailsError} onClose={closeAccount} onRetry={() => refreshAccount(selectedAccount)} onDashboardRefresh={load} />}
       {pendingAction && <div className="fixed inset-0 z-[100] grid place-items-center bg-[#10251c]/55 p-3 sm:p-5" role="dialog" aria-modal="true" aria-labelledby="admin-confirm-title"><div className="max-h-[calc(100dvh-1.5rem)] w-full max-w-md overflow-y-auto rounded-[2rem] bg-white p-6 shadow-2xl sm:max-h-[calc(100dvh-2.5rem)] sm:p-8"><p className="text-xs font-bold uppercase tracking-[.14em] text-[#718078]">Confirm admin action</p><h2 id="admin-confirm-title" className="mt-2 text-2xl font-bold">Are you sure?</h2><p className="mt-3 text-sm leading-6 text-[#687970]">{pendingAction.confirmText}</p><p className="mt-4 rounded-2xl bg-[#f5f5ef] p-4 text-xs leading-5 text-[#718078]">This change is recorded in the permanent admin audit history.</p><div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><button type="button" disabled={Boolean(busyId)} onClick={() => setPendingAction(null)} className="min-h-11 rounded-full px-5 py-3 text-sm font-bold transition hover:bg-[#edf1ec]">Cancel</button><button type="button" disabled={Boolean(busyId)} onClick={() => void executeAction({ ...pendingAction, confirmText: undefined })} className="min-h-11 rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#315846] disabled:opacity-50">{busyId ? "Saving…" : pendingAction.status === "active" || pendingAction.status === "visible" ? "Restore" : "Confirm"}</button></div></div></div>}
     </main>
   );
@@ -709,6 +721,13 @@ function StripeConnectionSummary({ consumerStripe, provider }: {
 function AccountDetailDialog({ account, details, loading, error, onClose, onRetry, onDashboardRefresh }: {
   account: Account; details: AccountDetails | null; loading: boolean; error: string; onClose: () => void; onRetry: () => Promise<void>; onDashboardRefresh: () => Promise<void>;
 }) {
+  const dialogActive = useRef(true);
+  useEffect(() => {
+    dialogActive.current = true;
+    return () => { dialogActive.current = false; };
+  }, []);
+  const [activationEmailBusy, setActivationEmailBusy] = useState<string | null>(null);
+  const [activationEmailResult, setActivationEmailResult] = useState("");
   const [welcomeBusy, setWelcomeBusy] = useState(false);
   const [welcomeResult, setWelcomeResult] = useState("");
   const [providerWelcomeBusy, setProviderWelcomeBusy] = useState(false);
@@ -740,6 +759,24 @@ function AccountDetailDialog({ account, details, loading, error, onClose, onRetr
     const result = response ? await response.json() as { error?: string; message?: string } : null;
     setWelcomeResult(response?.ok ? result?.message ?? "Welcome email sent." : result?.error ?? "The welcome email could not be sent.");
     setWelcomeBusy(false);
+  }
+  async function sendListingActivationEmail(service: AccountDetails["services"][number]) {
+    if (!window.confirm(`Send the listing-active email for "${service.title}" to ${account.email}? It includes earnings and free marketing/QR links. This sends one email for this listing and is recorded in the admin audit history.`)) return;
+    setActivationEmailBusy(service.id);
+    setActivationEmailResult("");
+    try {
+      const response = await fetch(`/api/admin/accounts/${encodeURIComponent(account.id)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "send_listing_active_email", serviceId: service.id, confirmed: true }),
+      });
+      const result = await response.json() as { error?: string; message?: string };
+      if (!dialogActive.current) return;
+      setActivationEmailResult(result.message || result.error || "Check delivery status before retrying.");
+      await onRetry();
+    } catch {
+      if (!dialogActive.current) return;
+      setActivationEmailResult("Delivery could not be confirmed. Refresh this account to check the status before retrying.");
+    } finally { if (dialogActive.current) setActivationEmailBusy(null); }
   }
   async function retryProviderWelcome() {
     if (!window.confirm("Send this provider welcome email now? This action is recorded in the admin audit history.")) return;
@@ -877,6 +914,20 @@ function AccountDetailDialog({ account, details, loading, error, onClose, onRetr
             { label: "Referral status", value: label(details.affiliateAttribution.status) }, { label: "Revenue share started", value: details.affiliateAttribution.revenue_share_started_at ? formatDate(details.affiliateAttribution.revenue_share_started_at) : null },
             { label: "Revenue share ends", value: details.affiliateAttribution.revenue_share_ends_at ? formatDate(details.affiliateAttribution.revenue_share_ends_at) : null },
           ]} /></div></section>}
+{details.provider && <section className="rounded-3xl border border-[#183126]/15 p-5">
+  <h3 className="text-lg font-bold">Listing activation emails</h3>
+  <p className="mt-2 text-sm text-[#52665b]">Send the same listing-active email for a public listing that has not received one, including listings already live before automatic emails started. Each listing can receive it once.</p>
+  {details.services.map((service) => {
+    const status = service.activation_email_status;
+    const canSend = service.publicly_visible && (!status || status === "suppressed");
+    const statusLabel = status === "sent" ? "Accepted by Resend" : status === "review_required" ? "Delivery needs review" : status === "queued" || status === "sending" ? "Queued / sending" : service.publicly_visible ? "Not sent" : "Listing not public";
+    return <div key={service.id} className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-[#183126]/10 pt-4">
+      <div><p className="font-bold">{service.title}</p><p className="text-sm text-[#52665b]">{statusLabel}</p></div>
+      <button type="button" disabled={!canSend || activationEmailBusy !== null} onClick={() => void sendListingActivationEmail(service)} className="rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">{activationEmailBusy === service.id ? "Sending…" : "Send listing-active email"}</button>
+    </div>;
+  })}
+  {activationEmailResult && <p role="status" className="mt-3 text-sm font-bold">{activationEmailResult}</p>}
+</section>}
 <RecordSection title="Listings" empty="No listings on this account." records={details.services.map((service) => ({ id: service.id, title: service.title, meta: `${label(service.category)} · ${service.pricing_type === "QUOTE_ONLY" ? "Custom Quote" : service.pricing_type === "HOURLY" && service.hourly_rate_cents !== null ? `${formatHourlyRate(service.hourly_rate_cents)} · ${formatDurationMinutes(service.minimum_duration_minutes ?? service.duration_minutes)} minimum` : `$${(service.price_cents / 100).toFixed(2)} · ${service.duration_minutes} min`}`, status: service.is_active ? "active" : "inactive", body: service.business_name }))} />
           <RecordSection title="Bookings" empty="No bookings on this account." records={details.bookings.map((booking) => ({ id: booking.id, title: booking.service_title, meta: `${booking.account_role} · ${formatDate(booking.starts_at)} · $${(booking.price_cents / 100).toFixed(2)}`, status: `${label(booking.status)} · ${label(booking.payment_status)}`, body: `Other party: ${booking.other_party_name}` }))} />
           <RecordSection title="Reviews" empty="No reviews connected to this account." records={details.reviews.map((review) => ({ id: review.id, title: `${review.relationship} · ${review.rating}/5 stars`, meta: `${review.service_title} · ${formatDate(review.created_at)}`, status: review.is_hidden ? "Hidden" : "Visible", body: review.body || "No written comment." }))} />
