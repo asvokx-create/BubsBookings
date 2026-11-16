@@ -18,14 +18,15 @@ test("dedicated identity key requires matching mode and restricted-key type", ()
   assert.match(failure.message, /do not need to upload your ID again/);
 });
 
-function harness(dob: unknown, unavailable = false) {
+function harness(dob: unknown, unavailable = false, priorUnderage = false, stripeStatus = "verified") {
+  const argumentsByQuery: unknown[][] = [];
   const writes: string[] = [];
   const expansions: unknown[] = [];
-  const session = { id: "vs_test", status: "verified", client_reference_id: "provider", metadata: { providerId: "provider", purpose: "provider_age_eligibility" }, livemode: false };
+  const session = { id: "vs_test", status: stripeStatus, client_reference_id: "provider", metadata: { providerId: "provider", purpose: "provider_age_eligibility" }, livemode: false };
   const provider = { id: "provider", stripe_identity_verification_session_id: session.id, stripe_identity_verification_mode: "test", age_verification_status: "failed", age_verification_source: null };
-  const client = { query: async (sql: string) => {
-    writes.push(sql);
-    if (sql.includes("SELECT provider.user_id")) return { rows: [{ user_id: "user", email: "synthetic@example.invalid", age_verification_status: "verified", stripe_identity_verification_session_id: null }] };
+  const client = { query: async (sql: string, args: unknown[] = []) => {
+    writes.push(sql); argumentsByQuery.push(args);
+    if (sql.includes("SELECT provider.user_id")) return { rows: [{ user_id: "user", email: "synthetic@example.invalid", age_verification_status: "verified", stripe_identity_verification_session_id: session.id, stripe_identity_verification_mode: "test", age_verification_source: null, age_verification_failure_code: priorUnderage ? "underage" : null }] };
     if (sql.includes("RETURNING user_id")) return { rows: [{user_id:"user"}] };
     return {rows:[]};
   }, release: () => {} };
@@ -42,7 +43,7 @@ function harness(dob: unknown, unavailable = false) {
   const output = ts.transpileModule(fs.readFileSync("lib/provider-age-verification.ts", "utf8"), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const context = {exports:{} as Record<string, (...args: unknown[])=>Promise<unknown>>,require:(id:string)=>{if (!(id in modules)) throw Error(id);return modules[id];},console};
   vm.runInNewContext(output,context);
-  return {api:context.exports,writes,expansions};
+  return {api:context.exports,writes,expansions,argumentsByQuery};
 }
 
 test("verified adult reconciles only after explicit DOB expansion", async () => {
@@ -64,4 +65,20 @@ test("missing DOB or denied sensitive result does not change eligibility or crea
     await assert.rejects(h.api.startProviderAgeVerification({providerId:"provider",origin:"https://example.invalid"}),/temporarily unavailable/);
     assert.equal(h.writes.length,0);
   }
+});
+
+
+test("nonverified Stripe events cannot erase a previously verified underage result", async () => {
+  for (const status of ["requires_input", "processing", "canceled"]) {
+    const h = harness(null, false, true, status);
+    assert.equal(await h.api.syncProviderAgeVerificationFromStripe("vs_test"), "failed");
+    const index = h.writes.findIndex(sql => sql.includes("age_verification_status=$2"));
+    assert.ok(index >= 0);
+    assert.equal(JSON.stringify(h.argumentsByQuery[index]), JSON.stringify(["provider", "failed", "underage"]));
+  }
+});
+test("fresh trusted adult DOB can clear a prior underage result", async () => {
+  const h = harness({year:1990,month:1,day:1}, false, true);
+  assert.equal(await h.api.syncProviderAgeVerificationFromStripe("vs_test"), "verified");
+  assert.ok(h.writes.some(sql => sql.includes("age_verification_status='verified'") && sql.includes("age_verification_failure_code=NULL")));
 });
