@@ -9,7 +9,7 @@ import { AFFILIATE_LEGAL_DOCUMENT_LIST } from "../lib/legal-document-versions.ts
 const CANONICAL_LEGAL_SOURCE_HASHES: Record<string, string> = {
   partner_agreement: "978d5acf7b38e979776543f0d36fa1e3f646a0b2443872732471c9c0cc076cf5",
   terms_of_service: "414a77ed8020569f48b841b00dfa068d6ee1afc4946c5bdba354cd08146286ab",
-  privacy_policy: "8fc46237c8ec6a63ee0124970dc813e6ac94d771577763117b422adc339aeedb",
+  privacy_policy: "f93473d3ec3842bdefeb278fc1a6bd9c45ffbfc61c87ebd41b0ccbb90e9c009e",
 };
 
 test("affiliate application requires all three separate affirmative acknowledgments", () => {

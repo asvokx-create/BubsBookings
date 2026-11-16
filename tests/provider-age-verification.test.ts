@@ -97,27 +97,22 @@ test("admin listing status reflects public eligibility and cannot restore an unv
   assert.match(preview, /listingInactiveReasons/);
 });
 
-test("administrators cannot bypass mandatory Stripe Identity age verification", () => {
-  const migration = read("database/migrations/084_legacy_provider_age_exceptions.sql");
+test("admin age passes require authenticated review and retain a distinct audit source", () => {
   const admin = read("app/api/admin/route.ts");
   const dashboard = read("components/admin-dashboard.tsx");
-  const verification = read("lib/provider-age-verification.ts");
-
-  assert.match(migration, /age_verification_exception_eligible boolean NOT NULL DEFAULT false/);
-  assert.match(migration, /UPDATE provider_profiles[\s\S]*age_verification_status <> 'verified'/);
-  assert.match(admin, /Administrators cannot bypass required provider age verification/);
-  assert.doesNotMatch(admin, /provider_age_exception_approved/);
+  assert.match(admin, /getAdminSession/);
+  assert.match(admin, /body.confirmedAdult !== true/);
+  assert.match(admin, /age_verification_failure_code === "underage"/);
+  assert.match(admin, /provider_age_exception_approved/);
   assert.match(admin, /provider_age_exception_revoked/);
-  assert.match(admin, /read_at=NULL/);
-  assert.doesNotMatch(admin, /is_read=false/);
-  assert.doesNotMatch(dashboard, /Approve admin exception/);
-  assert.match(dashboard, /Revoke historical exception/);
-  assert.match(dashboard, /provider-age-exception-note/);
-  assert.doesNotMatch(dashboard, /Confirm approval/);
-  assert.match(dashboard, /administrators cannot create a new exception/i);
-  const ageExceptionFlow = dashboard.slice(dashboard.indexOf("function beginAgeException"), dashboard.indexOf("return <div", dashboard.indexOf("function beginAgeException")));
-  assert.doesNotMatch(ageExceptionFlow, /window\.prompt\(/);
-  assert.match(verification, /age_verification_source === "admin_exception"/);
+  assert.match(admin, /age_verification_source='admin_exception', age_identity_verified_at=NULL/);
+  assert.match(admin, /age_verification_exception_granted_by=\$3/);
+  assert.match(admin, /confirmedAdult: body.confirmedAdult === true/);
+  assert.match(dashboard, /Grant age-verification pass/);
+  assert.match(dashboard, /type="checkbox" required/);
+  assert.match(dashboard, /not a Stripe verification/);
+  assert.match(admin, /service.age_verification_blocked=true AND service.provider_deleted_at IS NULL/);
+  assert.match(admin, /!listingLimit.overLimit/);
 });
 
 test("Stripe Identity sessions are bound to provider, purpose, and environment", () => {
@@ -130,7 +125,7 @@ test("Stripe Identity sessions are bound to provider, purpose, and environment",
   assert.match(verification, /session\.livemode === \(mode === "live"\)/);
   assert.match(verification, /stripe_identity_verification_mode === mode/);
   assert.match(status, /resetMismatchedStripeAgeVerification/);
-  assert.match(verification, /age_verification_failure_code='stripe_mode_changed'/);
+  assert.match(verification, /THEN 'underage' ELSE 'stripe_mode_changed' END/);
   assert.match(verification, /identity\.verificationSessions\.retrieve\(sessionId/);
   assert.match(verification, /if \(!provider\) return null/);
 });

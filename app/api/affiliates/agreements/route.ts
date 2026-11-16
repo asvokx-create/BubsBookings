@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { database } from "@/lib/database";
 import { validateAffiliateAgreementConsent } from "@/lib/affiliate-agreement-consent";
 import { AFFILIATE_LEGAL_DOCUMENTS } from "@/lib/legal-document-versions";
+import { affiliateRequiresAgreementReacceptance } from "@/lib/affiliate-agreement-reacceptance";
 import { enforceRateLimit } from "@/lib/request-security";
 
 export async function POST(request: Request) {
@@ -28,12 +29,7 @@ export async function POST(request: Request) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "No Partner profile belongs to this account." }, { status: 404 });
     }
-    const versionChanged = profile.partner_agreement_version !== null && (
-      profile.partner_agreement_version !== AFFILIATE_LEGAL_DOCUMENTS.partnerAgreement.version
-      || profile.terms_version !== AFFILIATE_LEGAL_DOCUMENTS.termsOfService.version
-      || profile.privacy_version !== AFFILIATE_LEGAL_DOCUMENTS.privacyPolicy.version
-    );
-    if (!versionChanged && !profile.agreement_reacceptance_required_at) {
+    if (!affiliateRequiresAgreementReacceptance(profile)) {
       await client.query("ROLLBACK");
       return NextResponse.json({ error: "This Partner account does not currently require reacceptance." }, { status: 409 });
     }
