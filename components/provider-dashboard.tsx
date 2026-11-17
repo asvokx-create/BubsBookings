@@ -36,7 +36,7 @@ import { formatDurationMinutes, formatHourlyRate, formatServicePrice } from "@/l
 import ProviderActivationChecklist, { type ProviderActivation } from "@/components/provider-activation-checklist";
 
 type RequestStatus = "new" | "accepted" | "cancelled" | "completed";
-export type DashboardSection = "overview" | "bookings" | "opportunities" | "calendar" | "messages" | "customers" | "revenue" | "services" | "profile" | "marketing" | "locations" | "availability" | "reviews" | "team" | "billing" | "settings";
+export type DashboardSection = "projects" | "overview" | "bookings" | "opportunities" | "calendar" | "messages" | "customers" | "revenue" | "services" | "profile" | "marketing" | "locations" | "availability" | "reviews" | "team" | "billing" | "settings";
 
 type ProviderBooking = { id: string; customer: string; customerImage: string; initials: string; service: string; startsAt: string; location: string; price: number; pricingType: "FIXED" | "HOURLY" | "QUOTE_ONLY"; hourlyRateCents: number | null; status: RequestStatus; assigneeName: string; repeatBookings: number };
 const initialRequests: ProviderBooking[] = [];
@@ -145,6 +145,7 @@ type DashboardNavGroup = "Business" | "Growth" | "Financial" | "Account";
 
 const dashboardNav: Array<{ section: DashboardSection; href: string; label: string; group: DashboardNavGroup }> = [
   { section: "overview", href: "/provider/dashboard", label: "Overview", group: "Business" },
+  { section: "projects", href: "/provider/dashboard/projects", label: "Hourly projects", group: "Business" },
   { section: "bookings", href: "/provider/dashboard/bookings", label: "Bookings", group: "Business" },
   { section: "opportunities", href: "/provider/dashboard/opportunities", label: "Opportunities", group: "Business" },
   { section: "calendar", href: "/provider/dashboard/calendar", label: "Calendar", group: "Business" },

@@ -8,7 +8,7 @@ import { AFFILIATE_LEGAL_DOCUMENT_LIST } from "../lib/legal-document-versions.ts
 
 const CANONICAL_LEGAL_SOURCE_HASHES: Record<string, string> = {
   partner_agreement: "978d5acf7b38e979776543f0d36fa1e3f646a0b2443872732471c9c0cc076cf5",
-  terms_of_service: "414a77ed8020569f48b841b00dfa068d6ee1afc4946c5bdba354cd08146286ab",
+  terms_of_service: "359e79bf05f1d1472524fbd302a0691ba2a62edc98c3cdc8c5410aea6876f82e",
   privacy_policy: "f93473d3ec3842bdefeb278fc1a6bd9c45ffbfc61c87ebd41b0ccbb90e9c009e",
 };
 
@@ -26,6 +26,7 @@ test("published legal source text matches the approved versions across checkout 
     const canonicalSource = source.replace(/\r\n?/g, "\n");
     assert.equal(createHash("sha256").update(canonicalSource).digest("hex"), CANONICAL_LEGAL_SOURCE_HASHES[document.key], `${document.key} source changed without a new approved version`);
     assert.match(document.contentHash, /^[a-f0-9]{64}$/);
+    assert.equal(document.contentHash, CANONICAL_LEGAL_SOURCE_HASHES[document.key]);
   }
 });
 

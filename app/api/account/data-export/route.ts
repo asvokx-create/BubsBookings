@@ -58,6 +58,16 @@ export async function GET(request: Request) {
       rows("SELECT * FROM analytics_events WHERE user_id = $1 ORDER BY created_at", [userId]),
     ]);
 
+    const hourlyProjects = await rows(`SELECT to_jsonb(project) || jsonb_build_object(
+      'service_address', CASE WHEN project.customer_id=$1 OR project.status IN ('active','submitted','approved') THEN project.service_address ELSE 'Address available after acceptance' END,
+      'access_instructions', CASE WHEN project.customer_id=$1 OR project.status IN ('active','submitted','approved') THEN project.access_instructions ELSE '' END) AS project
+      FROM hourly_projects project JOIN provider_profiles provider ON provider.id=project.provider_id
+      WHERE project.customer_id=$1 OR provider.user_id=$1 ORDER BY project.created_at`, [userId]);
+    const hourlyTimeEntries = await rows(`SELECT entry.* FROM hourly_time_entries entry JOIN hourly_projects project ON project.id=entry.project_id
+      JOIN provider_profiles provider ON provider.id=project.provider_id WHERE project.customer_id=$1 OR provider.user_id=$1 ORDER BY entry.started_at`, [userId]);
+    const hourlyProjectHistory = await rows(`SELECT audit.* FROM hourly_project_audit audit JOIN hourly_projects project ON project.id=audit.project_id
+      JOIN provider_profiles provider ON provider.id=project.provider_id WHERE project.customer_id=$1 OR provider.user_id=$1 ORDER BY audit.created_at`, [userId]);
+
     const providerData = providerId ? {
       profile: providerResult.rows[0],
       companies: await rows("SELECT * FROM provider_companies WHERE provider_id = $1 ORDER BY created_at", [providerId]),
@@ -83,6 +93,9 @@ export async function GET(request: Request) {
       settings,
       signInMethods,
       bookings,
+      hourlyProjects: hourlyProjects.map(row => row.project),
+      hourlyTimeEntries,
+      hourlyProjectHistory,
       jobRequests,
       quotes,
       conversations,

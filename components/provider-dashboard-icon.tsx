@@ -1,6 +1,7 @@
 import UiIcon, { type UiIconName } from "@/components/ui-icon";
 
 export type ProviderDashboardIconName = Extract<UiIconName,
+  | "projects"
   | "overview"
   | "bookings"
   | "opportunities"

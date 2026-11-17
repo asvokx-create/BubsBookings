@@ -1,3 +1,4 @@
+import { requiresHourlyProject } from "@/lib/hourly-project-policy";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
@@ -62,6 +63,10 @@ export async function PATCH(request: Request, context: RouteContext<"/api/quotes
         VALUES ($1,'job_quote','Quote declined',$2,'/provider/dashboard/opportunities',$3) ON CONFLICT (dedupe_key) DO NOTHING`, [quote.provider_user_id, `${session.user.name || "The customer"} declined your quote for ${quote.service_title}.`, `job-quote-declined-${quoteId}`]);
       await client.query("COMMIT");
       return NextResponse.json({ ok: true });
+    }
+    if (requiresHourlyProject(quote.pricing_type)) {
+      await client.query("ROLLBACK");
+      return NextResponse.json({ error: "Hourly work now uses tracked projects instead of prepaid hours. Request a project from this service's listing. Your existing paid bookings have not changed.", code: "HOURLY_PROJECT_REQUIRED", serviceId: quote.service_id }, { status: 409 });
     }
     if (!quote.provider_eligible) {
       await client.query("ROLLBACK");

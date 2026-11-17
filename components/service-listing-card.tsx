@@ -5,7 +5,7 @@ import ProfileAvatar from "@/components/profile-avatar";
 import ServiceCategoryIcon from "@/components/service-category-icon";
 import UiIcon from "@/components/ui-icon";
 import { getServiceCategoryIconConfig } from "@/lib/service-category-icons";
-import { formatDurationMinutes, formatServicePrice, type PricingType } from "@/lib/service-pricing";
+import { formatServicePrice, type PricingType } from "@/lib/service-pricing";
 
 type CompactService = {
   id: string;
@@ -66,7 +66,7 @@ export default function ServiceListingCard({
   const priceNote = service.pricingType === "QUOTE_ONLY"
     ? "custom pricing"
     : service.pricingType === "HOURLY"
-      ? `${formatDurationMinutes(service.minimumDurationMinutes ?? service.durationMinutes ?? 60)} minimum`
+      ? "tracked project"
       : "starting";
 
   return (

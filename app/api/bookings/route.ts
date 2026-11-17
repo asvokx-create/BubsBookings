@@ -1,3 +1,4 @@
+import { requiresHourlyProject } from "@/lib/hourly-project-policy";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
@@ -115,6 +116,9 @@ export async function POST(request: Request) {
   );
   const service = serviceResult.rows[0];
   if (!service) return NextResponse.json({ error: "This provider is not available on that day." }, { status: 409 });
+  if (requiresHourlyProject(service.pricing_type)) {
+    return NextResponse.json({ error: "Hourly work now uses tracked projects. Set a work limit and pay only after reviewing the final timesheet.", code: "HOURLY_PROJECT_REQUIRED", serviceId: service.id }, { status: 409 });
+  }
   const quoteOnly = service.pricing_type === "QUOTE_ONLY";
   if (quoteOnly && (packageId || requestedAddOns.length > 0 || couponCode || recurrence !== "one_time")) {
     return NextResponse.json({ error: "Quote-only services cannot use fixed-price booking options before a quote is accepted." }, { status: 400 });

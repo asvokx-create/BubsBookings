@@ -42,6 +42,7 @@ jobs:
       - run: npm ci
       - run: npm run security:node-runtime
       - run: npm audit --omit=dev --audit-level=high
+      - run: npm test
       - run: npm run test:booking-fee-migration
       - run: npm run lint
       - run: npm run build

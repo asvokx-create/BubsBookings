@@ -1,3 +1,4 @@
+import { requiresHourlyProject } from "@/lib/hourly-project-policy";
 import { NextResponse } from "next/server";
 import { database } from "@/lib/database";
 import { checkAndRecordContent } from "@/lib/content-safety";
@@ -22,6 +23,9 @@ export async function POST(request: Request, context: RouteContext<"/api/job-req
   const notes = typeof body.notes === "string" ? body.notes.trim() : "";
   const total = Number(body.total);
   const requestedPricingType = body.pricingType === "HOURLY" ? "HOURLY" : "FIXED";
+  if (requiresHourlyProject(requestedPricingType)) {
+    return NextResponse.json({ error: "Prepaid hourly quotes have been replaced by tracked projects. Ask the customer to request a project from your hourly listing, with a work limit and a final timesheet to approve.", code: "HOURLY_PROJECT_REQUIRED" }, { status: 409 });
+  }
   const requestedHourlyRateCents = Math.round(Number(body.hourlyRate) * 100);
   const requestedDurationMinutes = Number(body.durationMinutes);
   const expiresInDays = body.expiresInDays == null ? 7 : Number(body.expiresInDays);

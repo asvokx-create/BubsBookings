@@ -32,3 +32,8 @@ test("dashboard and authenticated acceptance route share compatibility decision"
     assert.match(readFileSync(path, "utf8"), /affiliateRequiresAgreementReacceptance\(profile\)/);
   }
 });
+
+test("privacy compatibility cannot waive the hourly terms revision", () => {
+  assert.equal(AFFILIATE_LEGAL_DOCUMENTS.termsOfService.version, "2026-11-09");
+  assert.equal(affiliateRequiresAgreementReacceptance({ ...existing, terms_version: "2026-10-22" }), true);
+});

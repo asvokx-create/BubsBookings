@@ -24,6 +24,7 @@ function harness(options: { admin?: boolean; failure?: string; verified?: boolea
     "@/lib/request-security": { enforceRateLimit: async () => true },
     "@/lib/provider-listing-limits": { lockProviderListingLimit: async () => ({ overLimit: options.overLimit ?? false }), listingLimitExceeded: () => false },
     "@/lib/plans": {}, "@/lib/stripe": {},
+    "@/lib/booking-payout-reconciliation": { BOOKING_PAYOUT_RECONCILIATION: "Synthetic payout reconciliation marker" },
     "@/lib/payment-release": { releaseBookingPayout: async () => { payments++; } },
     "@/lib/tip-payments": { refundBookingTip: async () => { payments++; }, releaseTipTransfer: async () => { payments++; } },
     "@/lib/content-safety": {}, "@/lib/financial-crime-screening": {},

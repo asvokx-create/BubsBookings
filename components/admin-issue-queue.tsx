@@ -137,7 +137,8 @@ function IssueCard({ issue, busy, update, closed = false }: {
           <div className="rounded-xl border border-[#183126]/10 bg-[#e7f1e3] p-4">
             <p className="text-xs font-bold uppercase tracking-wider text-[#718078]">Financial outcome</p>
             <p className="mt-2 text-sm font-bold">
-              {issue.resolution_outcome === "provider" ? "Provider won: payout released or queued for release" : "Customer won: payment refunded"}
+              {issue.resolution_outcome === "provider" ? "Provider won: payout released or queued for release"
+                : issue.resolution_outcome === "partial" ? "Partial refund issued; provider share adjusted" : "Customer won: payment refunded"}
             </p>
           </div>
         )}
@@ -239,9 +240,10 @@ export default function AdminIssueQueue({ type }: { type: "bugs" | "disputes" })
     }).catch(() => null);
     setBusy("");
 
-    if (!response?.ok) {
-      const data = response ? await response.json() as { error?: string } : null;
-      setError(data?.error ?? "That case could not be updated.");
+    const data = response ? await response.json().catch(() => null) as { error?: string; reconciliationRequired?: boolean } | null : null;
+    if (!response?.ok || response.status === 202 || data?.reconciliationRequired || data?.error) {
+      await load();
+      setError(data?.error ?? (outcome ? "The financial outcome could not be confirmed. Review the payment before retrying." : "That case could not be updated."));
       return;
     }
     await load();

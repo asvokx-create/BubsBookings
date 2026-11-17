@@ -122,7 +122,8 @@ test("webhook and payout routes enforce idempotency and authorization", async ()
   assert.match(webhook, /payment_status IN \('unpaid', 'pending', 'failed'\)/);
   assert.match(webhook, /paymentIntent\.amount_received !== checkout\.amount_total/);
   assert.match(webhook, /paymentIntent\?\.metadata\.kind === "booking_payment"/);
-  assert.match(webhook, /customer_total_cents = \$6/);
+  assert.match(webhook, /recordBookingChargeRefund/);
+  assert.match(await source("lib/booking-refund-reconciliation.ts"), /customer_total_cents=\$6/);
   assert.match(webhook, /provider\.stripe_account_id=\$5/);
   assert.match(cron, /secureSecretMatches/);
   assert.match(cron, /status: 401/);

@@ -26,6 +26,7 @@ export async function GET(request: Request) {
      JOIN "user" owner_user ON owner_user.id = p.user_id
      LEFT JOIN provider_team_members member ON member.id = b.assigned_team_member_id
      WHERE p.user_id = $1 AND b.provider_deleted_at IS NULL AND b.status <> 'cancelled'
+       AND NOT EXISTS (SELECT 1 FROM hourly_projects project WHERE project.payment_booking_id=b.id)
        AND b.starts_at >= now() - interval '6 months' AND b.starts_at < now() + interval '18 months'
      ORDER BY b.starts_at` :
     `SELECT b.id::text, s.title, s.business_name AS person, b.starts_at, b.ends_at, b.service_address AS location, b.status,
@@ -38,6 +39,7 @@ export async function GET(request: Request) {
      JOIN "user" owner_user ON owner_user.id = p.user_id
      LEFT JOIN provider_team_members member ON member.id = b.assigned_team_member_id
      WHERE b.customer_id = $1 AND b.status <> 'cancelled'
+       AND NOT EXISTS (SELECT 1 FROM hourly_projects project WHERE project.payment_booking_id=b.id)
        AND b.starts_at >= now() - interval '6 months' AND b.starts_at < now() + interval '18 months'
      ORDER BY b.starts_at`, [session.user.id]);
   const staff = role === "provider" ? (await database.query<{ id: string; name: string }>(

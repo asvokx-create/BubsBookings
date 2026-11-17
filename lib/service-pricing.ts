@@ -2,6 +2,16 @@ export const PRICING_TYPES = ["FIXED", "HOURLY", "QUOTE_ONLY"] as const;
 export type PricingType = (typeof PRICING_TYPES)[number];
 export const HOURLY_BILLING_INCREMENTS = [15, 30, 60] as const;
 
+// New tracked projects do not use prepaid-duration rules. Keep valid legacy
+// service metadata when a fixed listing converts; existing booking snapshots
+// remain untouched and retain their original terms.
+export const TRACKED_HOURLY_LEGACY_DEFAULTS = {
+  minimumDurationMinutes: 60,
+  maximumDurationMinutes: null,
+  billingIncrementMinutes: 30,
+  defaultDurationMinutes: 60,
+} as const;
+
 export type HourlyPricingConfig = {
   pricingType: "HOURLY";
   hourlyRateCents: number;
