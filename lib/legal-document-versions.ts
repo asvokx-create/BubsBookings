@@ -1,4 +1,4 @@
-import { PARTNER_AGREEMENT_VERSION, POLICY_VERSION } from "./policy-consent.ts";
+import { PARTNER_AGREEMENT_VERSION, TERMS_OF_SERVICE_VERSION, PRIVACY_POLICY_VERSION } from "./policy-consent.ts";
 
 export const AFFILIATE_LEGAL_DOCUMENTS = {
   partnerAgreement: {
@@ -10,17 +10,17 @@ export const AFFILIATE_LEGAL_DOCUMENTS = {
   },
   termsOfService: {
     key: "terms_of_service",
-    version: POLICY_VERSION,
+    version: TERMS_OF_SERVICE_VERSION,
     publicPath: "/terms",
     sourcePath: "app/terms/page.tsx",
     contentHash: "359e79bf05f1d1472524fbd302a0691ba2a62edc98c3cdc8c5410aea6876f82e",
   },
   privacyPolicy: {
     key: "privacy_policy",
-    version: POLICY_VERSION,
+    version: PRIVACY_POLICY_VERSION,
     publicPath: "/privacy",
     sourcePath: "app/privacy/page.tsx",
-    contentHash: "d6c27548f8ed192178a99fb47da1cfa32899a2589b9c37239269d3952648eb28",
+    contentHash: "f93473d3ec3842bdefeb278fc1a6bd9c45ffbfc61c87ebd41b0ccbb90e9c009e",
   },
 } as const;
 

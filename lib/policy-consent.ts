@@ -1,5 +1,7 @@
-export const POLICY_VERSION = "2026-11-09";
-export const PROVIDER_AGREEMENT_VERSION = "2026-11-09";
+// Version of the combined hourly and admin-age consent bundle.
+export const POLICY_VERSION = "2026-11-17";
+export const TERMS_OF_SERVICE_VERSION = "2026-11-09";
+export const PROVIDER_AGREEMENT_VERSION = "2026-11-17";
 export const PARTNER_AGREEMENT_VERSION = "2026-10-22";
 export const POLICY_EFFECTIVE_DATE = "November 9, 2026";
 
@@ -12,3 +14,8 @@ export function createPolicyConsentFields() {
     policyVersion: POLICY_VERSION,
   };
 }
+
+export const PRIVACY_POLICY_VERSION = "2026-11-16";
+export const ADMIN_AGE_POLICY_EFFECTIVE_DATE = "November 16, 2026";
+
+export const PROVIDER_AGREEMENT_EFFECTIVE_DATE = "November 17, 2026";

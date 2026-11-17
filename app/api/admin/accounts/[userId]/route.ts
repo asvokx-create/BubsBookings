@@ -1,3 +1,4 @@
+import { requestListingActiveEmail } from "@/lib/listing-active-email";
 import { NextResponse } from "next/server";
 import { getAdminSession } from "@/lib/admin";
 import { database } from "@/lib/database";
@@ -97,7 +98,9 @@ export async function GET(
       ),
       database.query(
         `SELECT id::text, slug, title, category, business_name, price_cents,pricing_type,hourly_rate_cents,minimum_duration_minutes,
-                duration_minutes, is_active, created_at, updated_at
+                duration_minutes, is_active, created_at, updated_at,
+                EXISTS(SELECT 1 FROM listing_active_email_eligible eligible WHERE eligible.service_id=services.id) AS publicly_visible,
+                (SELECT status FROM listing_active_email_deliveries delivery WHERE delivery.service_id=services.id) AS activation_email_status
          FROM services WHERE $1::uuid IS NOT NULL AND provider_id = $1::uuid AND provider_deleted_at IS NULL
          ORDER BY created_at DESC LIMIT 50`,
         [providerId ?? null],
@@ -246,7 +249,7 @@ export async function POST(
   const { userId } = await params;
   if (!userId || userId.length > 200) return NextResponse.json({ error: "Invalid account." }, { status: 400 });
 
-  const body = await request.json().catch(() => null) as { action?: string } | null;
+  const body = await request.json().catch(() => null) as { action?: string; serviceId?: string; confirmed?: boolean } | null;
   const account = await database.query<{ name: string; email: string; provider_id: string | null; provider_active: boolean }>(
     `SELECT account.name, account.email, provider.id::text AS provider_id, COALESCE(provider.is_active,false) AS provider_active
      FROM "user" account
@@ -255,6 +258,18 @@ export async function POST(
     [userId],
   );
   if (!account.rows[0]) return NextResponse.json({ error: "Account not found." }, { status: 404 });
+
+  if (body?.action === "send_listing_active_email") {
+    if (body.confirmed !== true || !body.serviceId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.serviceId)) {
+      return NextResponse.json({ error: "Confirm the listing activation email and select a valid listing." }, { status: 400 });
+    }
+    const result = await requestListingActiveEmail({ serviceId: body.serviceId, userId, actorUserId: session.user.id });
+    if (result.status === "not_public") return NextResponse.json({ error: "This listing is not public or does not belong to this provider." }, { status: 409 });
+    if (result.status === "review_required") return NextResponse.json({ error: "This delivery needs review in Resend before it can be retried." }, { status: 409 });
+    return NextResponse.json({ ok: true, status: result.status, message: result.status === "sent"
+      ? "Activation email accepted by Resend (or previously sent). No duplicate was sent."
+      : "Activation email queued. It will only send while the listing is public." });
+  }
 
   if (body?.action === "retry_provider_welcome") {
     const provider = account.rows[0];

@@ -36,21 +36,36 @@ function dobFromVerifiedSession(session: Stripe.Identity.VerificationSession) {
   return `${String(dob.year).padStart(4, "0")}-${String(dob.month).padStart(2, "0")}-${String(dob.day).padStart(2, "0")}`;
 }
 
-async function setProviderAgeVerification(providerId: string, status: ProviderAgeVerificationStatus, failureCode: string | null = null) {
+async function setProviderAgeVerification(providerId: string, status: ProviderAgeVerificationStatus, failureCode: string | null = null, expectedSessionId: string, expectedMode: "test" | "live") {
   const client = await database.connect();
   let firstListing: { id: string; category: string; delivery_type: string; city: string; state: string } | undefined;
   let providerUserId: string | undefined;
   let delivery: { email: string; sessionId: string; status: ProviderAgeVerificationStatus } | undefined;
   try {
     await client.query("BEGIN");
-    const current = await client.query<{ user_id: string; email: string; age_verification_status: ProviderAgeVerificationStatus; stripe_identity_verification_session_id: string | null }>(`SELECT provider.user_id, account.email,
-        provider.age_verification_status, provider.stripe_identity_verification_session_id
+    const current = await client.query<{ user_id: string; email: string; age_verification_status: ProviderAgeVerificationStatus; stripe_identity_verification_session_id: string | null; stripe_identity_verification_mode: string | null; age_verification_source: string | null; age_verification_failure_code: string | null }>(`SELECT provider.user_id, account.email,
+        provider.age_verification_status, provider.stripe_identity_verification_session_id,
+        provider.stripe_identity_verification_mode, provider.age_verification_source, provider.age_verification_failure_code
       FROM provider_profiles provider
       JOIN "user" account ON account.id=provider.user_id
       WHERE provider.id::text=$1
       FOR UPDATE OF provider`, [providerId]);
     const prior = current.rows[0];
     if (!prior) throw new Error("PROVIDER_NOT_FOUND");
+    // Stripe network calls happen before this lock. Never overwrite an admin
+    // decision or a replacement session that arrived while they were in flight.
+    if (prior.age_verification_source === "admin_exception"
+        || prior.stripe_identity_verification_session_id !== expectedSessionId
+        || prior.stripe_identity_verification_mode !== expectedMode) {
+      await client.query("COMMIT");
+      return prior.age_verification_status;
+    }
+    // A retry or stale nonverified event is not evidence that a known minor
+    // became eligible. Only a trusted, freshly checked adult DOB clears this.
+    if (status !== "verified" && prior.age_verification_failure_code === "underage") {
+      status = "failed";
+      failureCode = "underage";
+    }
     providerUserId = prior.user_id;
     if (status === "verified") {
       const provider = await client.query<{ user_id: string }>(`UPDATE provider_profiles
@@ -126,6 +141,7 @@ async function setProviderAgeVerification(providerId: string, status: ProviderAg
       console.error("Provider verification analytics could not be recorded", { providerId, error });
     });
   }
+  return status;
 }
 
 function sessionBelongsToProvider(session: Stripe.Identity.VerificationSession, providerId: string, mode: "test" | "live") {
@@ -143,7 +159,8 @@ export async function resetMismatchedStripeAgeVerification(providerId: string, s
     await client.query("BEGIN");
     const reset = await client.query(`UPDATE provider_profiles
       SET age_verification_status='not_started', age_identity_verified_at=NULL,
-          age_verification_failure_code='stripe_mode_changed', age_verification_source=NULL, updated_at=now()
+          age_verification_failure_code=CASE WHEN age_verification_failure_code='underage'
+            THEN 'underage' ELSE 'stripe_mode_changed' END, age_verification_source=NULL, updated_at=now()
       WHERE id::text=$1 AND age_verification_source='stripe_identity'
         AND stripe_identity_verification_mode IS DISTINCT FROM $2`, [providerId, mode]);
     if (reset.rowCount) {
@@ -173,8 +190,7 @@ export async function syncProviderAgeVerificationFromStripe(sessionId: string) {
     WHERE stripe_identity_verification_session_id=$1 AND stripe_identity_verification_mode=$2`, [sessionId, mode]);
   const provider = providerResult.rows[0];
   if (!provider) return null;
-  // Historical exceptions remain readable so existing records are not changed
-  // by reconciliation. New exceptions cannot be created by the admin API.
+  // Admin approval is a separate local eligibility decision, not a Stripe result.
   if (provider.age_verification_source === "admin_exception") return "verified" as const;
 
   let session = await getStripe().identity.verificationSessions.retrieve(sessionId);
@@ -201,17 +217,14 @@ export async function syncProviderAgeVerificationFromStripe(sessionId: string) {
     // closed, preserve the session for reconciliation, and do not demand another ID.
     if (!dob) throw identityResultsError();
     if (dob && isAtLeastEighteen(dob)) {
-      await setProviderAgeVerification(provider.id, "verified");
-      return "verified" as const;
+      return setProviderAgeVerification(provider.id, "verified", null, sessionId, mode);
     }
     // A verified, usable DOB is required before deciding age eligibility.
-    await setProviderAgeVerification(provider.id, "failed", "underage");
-    return "failed" as const;
+    return setProviderAgeVerification(provider.id, "failed", "underage", sessionId, mode);
   }
 
   const status = ageVerificationStatusForStripeSession(session);
-  await setProviderAgeVerification(provider.id, status, session.last_error?.code ?? null);
-  return status;
+  return setProviderAgeVerification(provider.id, status, session.last_error?.code ?? null, sessionId, mode);
 }
 
 export async function startProviderAgeVerification(input: { providerId: string; origin: string }) {
@@ -252,9 +265,23 @@ export async function startProviderAgeVerification(input: { providerId: string; 
   const client = await database.connect();
   try {
     await client.query("BEGIN");
+    const locked = await client.query<StoredProvider>(`SELECT id::text, age_verification_status,
+        age_verification_source, stripe_identity_verification_session_id, stripe_identity_verification_mode
+      FROM provider_profiles WHERE id::text=$1 FOR UPDATE`, [provider.id]);
+    const latest = locked.rows[0];
+    if (!latest) throw new Error("PROVIDER_NOT_FOUND");
+    // A concurrent admin grant or another start owns the newer state. Do not
+    // clear it, hide listings, or hand out this now-unassociated Stripe URL.
+    if (latest.age_verification_source === "admin_exception"
+        || latest.stripe_identity_verification_session_id !== provider.stripe_identity_verification_session_id
+        || latest.stripe_identity_verification_mode !== provider.stripe_identity_verification_mode) {
+      await client.query("COMMIT");
+      return { status: latest.age_verification_status, url: null };
+    }
     await client.query(`UPDATE provider_profiles
       SET stripe_identity_verification_session_id=$2, stripe_identity_verification_mode=$3,
-          age_verification_status='requires_input', age_identity_verified_at=NULL, age_verification_failure_code=NULL,
+          age_verification_status='requires_input', age_identity_verified_at=NULL,
+          age_verification_failure_code=CASE WHEN age_verification_failure_code='underage' THEN 'underage' ELSE NULL END,
           age_verification_source=NULL, updated_at=now()
       WHERE id::text=$1`, [provider.id, session.id, mode]);
     await client.query(`UPDATE services SET is_active=false, age_verification_blocked=true, updated_at=now()

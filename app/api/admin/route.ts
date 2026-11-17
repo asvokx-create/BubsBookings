@@ -245,7 +245,7 @@ export async function PATCH(request: Request) {
   if (!await enforceRateLimit({ request, userId: session.user.id, bucket: "admin-action", limit: 30 })) return NextResponse.json({ error: "Too many admin actions. Please wait a minute." }, { status: 429 });
 
   const body = (await request.json()) as {
-    action?: unknown; targetId?: unknown; status?: unknown; reason?: unknown; amountCents?: unknown;
+    action?: unknown; targetId?: unknown; status?: unknown; reason?: unknown; amountCents?: unknown; confirmedAdult?: unknown;
   };
   const action = typeof body.action === "string" ? body.action : "";
   const targetId = typeof body.targetId === "string" ? body.targetId : "";
@@ -556,7 +556,7 @@ export async function PATCH(request: Request) {
         }
       }
       const result = await client.query<{ id: string; is_active: boolean; provider_id: string; company_id: string }>(
-        "UPDATE services SET is_active = $2, updated_at = now() WHERE id = $1::uuid AND provider_deleted_at IS NULL RETURNING id::text, is_active, provider_id::text, company_id::text",
+        "UPDATE services SET is_active = $2, age_verification_blocked=false, updated_at = now() WHERE id = $1::uuid AND provider_deleted_at IS NULL RETURNING id::text, is_active, provider_id::text, company_id::text",
         [targetId, status === "active"],
       );
       if (!result.rowCount) throw new Error("NOT_FOUND");
@@ -586,10 +586,6 @@ export async function PATCH(request: Request) {
       targetType = "provider";
       auditAction = status === "active" ? "provider_restored" : "provider_paused";
     } else if (action === "provider_age_exception" && (status === "approve" || status === "revoke")) {
-      if (status === "approve") {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: "Administrators cannot bypass required provider age verification. The provider must complete Stripe Identity verification." }, { status: 403 });
-      }
       if (!reason) {
         await client.query("ROLLBACK");
         return NextResponse.json({ error: "Add an audit note for this provider age-verification exception." }, { status: 400 });
@@ -597,28 +593,69 @@ export async function PATCH(request: Request) {
       const providerResult = await client.query<{
         id: string; user_id: string; age_verification_status: string;
         age_verification_source: "stripe_identity" | "admin_exception" | null;
-      }>(`SELECT id::text, user_id, age_verification_status, age_verification_source
+        age_verification_failure_code: string | null; stripe_identity_verification_session_id: string | null;
+      }>(`SELECT id::text, user_id, age_verification_status, age_verification_source, age_verification_failure_code, stripe_identity_verification_session_id
           FROM provider_profiles WHERE id::text=$1 FOR UPDATE`, [targetId]);
       const provider = providerResult.rows[0];
       if (!provider) throw new Error("NOT_FOUND");
 
-      if (provider.age_verification_source !== "admin_exception") {
-        await client.query("ROLLBACK");
-        return NextResponse.json({ error: "Only a historical admin exception can be revoked here." }, { status: 409 });
+      if (status === "approve") {
+        if (body.confirmedAdult !== true || provider.age_verification_failure_code === "underage") {
+          await client.query("ROLLBACK");
+          return NextResponse.json({ error: "Confirm you have independently reviewed that this provider is at least 18. A known underage result cannot be overridden." }, { status: 409 });
+        }
+        if (provider.age_verification_status === "verified") {
+          await client.query("ROLLBACK");
+          return NextResponse.json({ error: "This provider already satisfies the age requirement." }, { status: 409 });
+        }
+        await client.query(`UPDATE provider_profiles SET age_verification_status='verified',
+            age_verification_source='admin_exception', age_identity_verified_at=NULL,
+            age_verification_exception_note=$2, age_verification_exception_granted_at=now(),
+            age_verification_exception_granted_by=$3, updated_at=now()
+          WHERE id::text=$1`, [provider.id, reason, session.user.id]);
+        // Age-held listings already occupy plan slots. Leave all other holds intact.
+        const listingLimit = await lockProviderListingLimit(client, provider.id);
+        if (listingLimit && !listingLimit.overLimit) {
+          await client.query(`UPDATE services service SET is_active=true, age_verification_blocked=false, updated_at=now()
+            FROM provider_profiles provider, provider_companies company
+            WHERE service.provider_id=provider.id AND service.company_id=company.id
+              AND provider.id::text=$1 AND provider.is_active=true AND company.is_active=true
+              AND service.age_verification_blocked=true AND service.provider_deleted_at IS NULL
+              AND COALESCE((SELECT audit.action FROM admin_audit_log audit
+                WHERE audit.target_type='listing' AND audit.target_id=service.id::text
+                  AND audit.action IN ('listing_removed','listing_deleted','listing_restored')
+                ORDER BY audit.created_at DESC LIMIT 1), '') NOT IN ('listing_removed','listing_deleted')
+              AND NOT EXISTS (SELECT 1 FROM account_restrictions restriction
+                WHERE restriction.user_id=provider.user_id AND restriction.status IN ('under_review','suspended','banned')
+                  AND (restriction.expires_at IS NULL OR restriction.expires_at>now()))`, [provider.id]);
+        }
+        auditAction = "provider_age_exception_approved";
+      } else {
+        if (provider.age_verification_source !== "admin_exception") {
+          await client.query("ROLLBACK");
+          return NextResponse.json({ error: "Only an active admin age-verification pass can be revoked here." }, { status: 409 });
+        }
+        await client.query(`UPDATE provider_profiles SET age_verification_status='not_started', age_verification_source=NULL,
+            age_identity_verified_at=NULL, age_verification_failure_code=NULL, age_verification_exception_note=$2,
+            age_verification_exception_granted_at=NULL, age_verification_exception_granted_by=NULL,
+            stripe_identity_verification_session_id=NULL, stripe_identity_verification_mode=NULL, updated_at=now()
+          WHERE id::text=$1`, [provider.id, reason]);
+        await client.query(`UPDATE services SET is_active=false, age_verification_blocked=true, updated_at=now()
+          WHERE provider_id::text=$1 AND provider_deleted_at IS NULL
+            AND (is_active=true OR age_verification_blocked=true)`, [provider.id]);
+        auditAction = "provider_age_exception_revoked";
       }
-      await client.query(`UPDATE provider_profiles SET age_verification_status='not_started', age_verification_source=NULL,
-          age_identity_verified_at=NULL, age_verification_failure_code=NULL, age_verification_exception_note=$2,
-          age_verification_exception_granted_at=NULL, age_verification_exception_granted_by=NULL, updated_at=now()
-        WHERE id::text=$1`, [provider.id, reason]);
-      await client.query(`UPDATE services SET is_active=false, age_verification_blocked=true, updated_at=now()
-        WHERE provider_id::text=$1 AND provider_deleted_at IS NULL`, [provider.id]);
       await client.query(`INSERT INTO notifications (user_id, type, title, message, href, dedupe_key)
-        VALUES ($1, 'provider_age_exception', 'Provider eligibility exception withdrawn',
-          'Your historical BubsBookings age-verification exception was withdrawn. Complete Stripe Identity age verification before listings and booking acceptance can resume. Stripe payout eligibility remains separate.',
-          '/provider/dashboard/billing', $2) ON CONFLICT (dedupe_key) DO UPDATE SET created_at=now(), read_at=NULL`, [provider.user_id, `provider-age-exception-${provider.id}`]);
-      auditAction = "provider_age_exception_revoked";
+        VALUES ($1, 'provider_age_exception', $2, $3, '/provider/dashboard/billing', $4)
+        ON CONFLICT (dedupe_key) DO UPDATE SET title=EXCLUDED.title, message=EXCLUDED.message, created_at=now(), read_at=NULL`,
+        [provider.user_id, status === "approve" ? "Admin age-verification pass granted" : "Admin age-verification pass revoked",
+          status === "approve" ? "A BubsBookings administrator approved your age eligibility. This is an admin decision, not a Stripe Identity verification. Other listing and Stripe payout requirements still apply."
+            : "Your admin age-verification pass was revoked. Complete Stripe Identity age verification before listings and booking acceptance can resume. Stripe payout eligibility remains separate.",
+          `provider-age-exception-${provider.id}`]);
       targetType = "provider";
-      details = { status, reason, eligibility: "historical_admin_provider_exception" };
+      details = { status, reason, eligibility: "admin_provider_age_exception", confirmedAdult: body.confirmedAdult === true,
+        previousStatus: provider.age_verification_status, previousSource: provider.age_verification_source,
+        previousStripeSessionId: provider.stripe_identity_verification_session_id };
     } else if (action === "provider_verification" && ["phone", "identity", "business"].includes(status)) {
       const column = status === "phone" ? "phone_verified" : status === "identity" ? "identity_verified" : "business_verified";
       const result = await client.query(`UPDATE provider_profiles SET ${column} = NOT ${column}, is_verified = CASE WHEN $2 = 'identity' OR $2 = 'business' THEN true ELSE is_verified END, updated_at = now() WHERE id::text = $1`, [targetId, status]);
