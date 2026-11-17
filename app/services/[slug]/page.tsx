@@ -7,6 +7,9 @@ import { notFound } from "next/navigation";
 import { auth, isAuthConfigured } from "@/lib/auth";
 import { formatDuration, getServiceBySlug, getServiceVisual } from "@/lib/marketplace";
 import BookingCard from "./booking-card";
+import CalendlyCallRequest from "@/components/calendly-call-request";
+import CalendlyAvailabilityPreview from "@/components/calendly-availability-preview";
+import { hasPublicCalendlyPreview } from "@/lib/calendly-service-preview";
 import StationaryBookingPanel from "@/components/stationary-booking-panel";
 import AccountNav from "@/components/account-nav";
 import FavoriteButton from "@/components/favorite-button";
@@ -56,6 +59,7 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
   const servicesReturnPath = validMarketplaceReturn ? returnPathValue : "/#nearby-listings";
   const parentBookingId = typeof query.repeatOf === "string" ? query.repeatOf : "";
   const service = await getServiceBySlug(slug);
+
   const session = isAuthConfigured() ? await auth.api.getSession({ headers: await headers() }) : null;
   if (!service) {
     const ownerStatus = session?.user?.id ? await getOwnerPrivateListingStatus(slug, session.user.id) : null;
@@ -63,6 +67,7 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
     notFound();
   }
 
+  const showCalendlyPreview = (service.deliveryType === "REMOTE" || service.deliveryType === "BOTH") && await hasPublicCalendlyPreview(service.id);
   const visual = getServiceVisual(service.category);
   const duration = formatDuration(service.durationMinutes);
   const priceLabel = service.pricingType === "QUOTE_ONLY" ? "Request a Quote" : service.pricingType === "HOURLY" && service.hourlyRateCents !== null ? formatHourlyRate(service.hourlyRateCents) : `$${service.price}`;
@@ -146,7 +151,11 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
             </div>
           </div>
           <aside className="service-booking-column min-w-0">
+
             <StationaryBookingPanel disabled={service.pricingType === "HOURLY"}><BookingCard serviceId={service.id} price={service.pricingType === "QUOTE_ONLY" ? 0 : service.price} duration={duration} pricingType={service.pricingType} hourlyRateCents={service.hourlyRateCents} minimumDurationMinutes={service.minimumDurationMinutes} maximumDurationMinutes={service.maximumDurationMinutes} billingIncrementMinutes={service.billingIncrementMinutes} defaultDurationMinutes={service.defaultDurationMinutes} serviceTitle={service.title} provider={service.provider} serviceCity={service.city} serviceState={service.state} deliveryType={service.deliveryType} bookingQuestions={service.bookingQuestions} isSignedIn={Boolean(session)} returnPath={`/services/${service.slug}`} cancellationPolicy={service.cancellationPolicy} cancellationWindowHours={service.cancellationWindowHours} noShowPolicy={service.noShowPolicy} parentBookingId={parentBookingId} requestAnotherTimeHref={`/requests?category=${encodeURIComponent(service.category)}&title=${encodeURIComponent(service.title)}&delivery=${service.deliveryType === "REMOTE" ? "REMOTE" : "IN_PERSON"}`} packages={service.pricingType === "QUOTE_ONLY" ? [] : service.packages} addOns={service.pricingType === "QUOTE_ONLY" ? [] : service.addOns} recurrenceOptions={service.pricingType === "QUOTE_ONLY" ? ["one_time"] : service.recurrenceOptions} serviceKind={service.serviceKind} preparationNotes={service.preparationNotes} /></StationaryBookingPanel>
+            {process.env.CALENDLY_CALL_BOOKINGS_ENABLED === "true" && <CalendlyCallRequest serviceId={service.id} />}
+            {showCalendlyPreview && <CalendlyAvailabilityPreview key={service.id} serviceId={service.id} />}
+
           </aside>
         </div>
       </div>

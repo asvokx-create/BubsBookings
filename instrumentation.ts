@@ -1,6 +1,8 @@
 const schedulerState = globalThis as typeof globalThis & {
   __bubsBookingsReminderTimer?: NodeJS.Timeout;
   __bubsBookingsMarketingTimer?: NodeJS.Timeout;
+  __bubsBookingsCallTimer?: NodeJS.Timeout;
+  __bubsBookingsCallRun?: boolean;
 };
 
 export async function register() {
@@ -25,6 +27,22 @@ export async function register() {
     initialReminderRun.unref();
     schedulerState.__bubsBookingsReminderTimer = setInterval(runReminders, 10 * 60_000);
     schedulerState.__bubsBookingsReminderTimer.unref();
+  }
+
+  // New scheduling can be switched off without stopping cancellation/refund recovery.
+  // Durable due-claims and per-call locks also protect multi-instance deployments.
+  if ((process.env.CALENDLY_CALL_BOOKINGS_ENABLED === "true" || process.env.CALENDLY_CALL_RECOVERY_ENABLED === "true") && !schedulerState.__bubsBookingsCallTimer) {
+    const { processDueCalendlyCalls } = await import("./lib/calendly-call-runtime");
+    const runCalls = () => {
+      if (schedulerState.__bubsBookingsCallRun) return;
+      schedulerState.__bubsBookingsCallRun = true;
+      void processDueCalendlyCalls().catch((error) => console.error("Scheduled call recovery failed", error))
+        .finally(() => { schedulerState.__bubsBookingsCallRun = false; });
+    };
+    const initialCallRun = setTimeout(runCalls, 10_000);
+    initialCallRun.unref();
+    schedulerState.__bubsBookingsCallTimer = setInterval(runCalls, 30_000);
+    schedulerState.__bubsBookingsCallTimer.unref();
   }
 
   if (!schedulerState.__bubsBookingsMarketingTimer) {

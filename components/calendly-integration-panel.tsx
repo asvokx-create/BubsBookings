@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import CalendlyPreviewSettings from "@/components/calendly-preview-settings";
+import CalendlyCallOfferSettings from "@/components/calendly-call-offer-settings";
+import CalendlyCallDraftSettings from "@/components/calendly-call-draft-settings";
 
 type Connection = {
   id: string;
@@ -114,6 +117,9 @@ export default function CalendlyIntegrationPanel() {
       {connection.lastSyncError && <p role="alert" className="mt-3 rounded-xl bg-[#fff1e8] px-4 py-3 text-xs font-semibold text-[#9a4e25]"><span className="block font-bold">Appointment sync failed</span>{connection.lastSyncError} Reconnect Calendly if the account was connected before calendar permissions were approved.</p>}
       {connection.webhookError && <p className="mt-3 rounded-xl bg-[#fff8dc] px-4 py-3 text-xs font-semibold text-[#786317]">{connection.webhookError}</p>}
     </div> : <div className="mt-5 rounded-2xl bg-[#f5f5ef] p-5"><p className="font-bold">No Calendly account connected</p><p className="mt-1 text-sm leading-6 text-[#65756d]">Connect securely with Calendly OAuth. You will never be asked to paste a private API token.</p>{!configured && <p role="alert" className="mt-3 text-sm font-semibold text-[#9a4e25]">The BubsBookings administrator must finish the Calendly app configuration before accounts can connect.</p>}</div>}
+    {connection && <CalendlyPreviewSettings key={connection.connectedAt} />}
+    {!loading && <CalendlyCallOfferSettings />}
+    {!loading && <CalendlyCallDraftSettings key={`call-draft:${connection?.connectedAt ?? "disconnected"}`} />}
     {message && <p role="status" className="mt-4 rounded-xl bg-[#edf2e8] px-4 py-3 text-sm font-semibold text-[#315846]">{message}</p>}
   </section>;
 }

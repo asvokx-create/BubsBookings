@@ -1,0 +1,24 @@
+'use client';
+import Link from 'next/link';
+import CalendlyPaidCallCancellation,{type CallCancellationView} from '@/components/calendly-paid-call-cancellation';
+import {useCallback,useEffect,useRef,useState} from 'react';
+type Call={id:string;eventName:string;startsAt:string;endsAt:string;state:string;version:number;billingMode:string;totalCents:number;isProvider:boolean;cancellation:CallCancellationView|null;canComplete:boolean;paymentBookingId:string|null;meetingUrl:string|null};
+export default function CalendlyCalls(){const[calls,setCalls]=useState<Call[]>([]),[message,setMessage]=useState(''),[busy,setBusy]=useState(false);
+ const active=useRef(true),inFlight=useRef<Promise<void>|null>(null),controller=useRef<AbortController|null>(null);
+ const load=useCallback(()=>{
+  if(inFlight.current)return inFlight.current;
+  const abort=new AbortController();controller.current=abort;
+  const pending=(async()=>{try{const r=await fetch('/api/calendly-calls',{cache:'no-store',signal:abort.signal});const b=await r.json();if(!r.ok)throw Error(b.error);if(active.current&&!abort.signal.aborted)setCalls(b.calls);}finally{if(controller.current===abort){controller.current=null;inFlight.current=null;}}})();
+  inFlight.current=pending;return pending;
+ },[]);
+ useEffect(()=>{active.current=true;void Promise.resolve().then(load).catch(e=>{if(active.current&&e.name!=='AbortError')setMessage(e.message);});return()=>{active.current=false;controller.current?.abort();};},[load]);
+ const needsPolling=calls.some(c=>['authorizing','scheduling','confirming','cancelling','review'].includes(c.state));
+ useEffect(()=>{
+  if(!needsPolling)return;
+  const deadline=Date.now()+120_000;
+  const timer=setInterval(()=>{if(Date.now()>=deadline){clearInterval(timer);return;}void load().catch(()=>{});},10_000);
+  return()=>clearInterval(timer);
+ },[needsPolling,load]);
+ async function act(c:Call,action:string,extra:Record<string,unknown>={}){setBusy(true);setMessage('');try{const checkout=action==='checkout';const r=await fetch('/api/calendly-calls/'+c.id+(checkout?'/checkout':''),{method:checkout?'POST':'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(checkout?{authorizeHold:true,version:c.version}:{action,version:c.version,...extra})});const b=await r.json();if(!r.ok)throw Error(b.error);if(checkout&&typeof b.url==='string'){const url=new URL(b.url);if(url.protocol!=='https:'||url.hostname!=='checkout.stripe.com')throw Error('Payment link could not be verified.');window.location.assign(url.href);}else await load();}catch(e){setMessage(e instanceof Error?e.message:'Unable to update. Refresh before retrying.');await load().catch(()=>{});}finally{setBusy(false);}}
+ return <section className="space-y-4"><h1 className="text-2xl font-bold">Your calls</h1><p>Only a confirmed status means the call and any required payment have both been verified. A payment return page alone is not confirmation.</p><p>Status updates automatically every 10 seconds for up to two minutes while processing. Use Refresh status for later updates.</p><button disabled={busy} onClick={()=>load().catch(e=>setMessage(e.message))}>Refresh status</button><p role="status">{message}</p>{calls.map(c=><article className="rounded-xl border p-4 space-y-2" key={c.id}><h2>{c.eventName}</h2><p>{new Date(c.startsAt).toLocaleString()} · {c.state} · {c.billingMode==='free'?'Free':`$${(c.totalCents/100).toFixed(2)} total`}</p>{c.isProvider&&c.state==='requested'&&<button disabled={busy} onClick={()=>act(c,'accept')}>Accept call request</button>}{!c.isProvider&&c.billingMode==='paid'&&['accepted','authorizing'].includes(c.state)&&<div><p>Authorize a temporary card hold. We charge only after Calendly confirms the slot. Calendly may send an invitation before payment completes. If the charge fails, we cancel the invitation and notify both participants in BubsBookings.</p><button disabled={busy} onClick={()=>act(c,'checkout')}>Authorize ${(c.totalCents/100).toFixed(2)} hold</button></div>}{['requested','accepted','authorizing'].includes(c.state)||c.state==='confirmed'&&c.billingMode==='free'?<button disabled={busy} onClick={()=>act(c,'cancel')}>Cancel call</button>:null}{c.cancellation&&<CalendlyPaidCallCancellation policy={c.cancellation} isProvider={c.isProvider} busy={busy} onRequest={(reason,windowHours,expectedLateCancellation)=>act(c,'cancel_paid',{reason,windowHours,expectedLateCancellation,confirmCancellation:true})}/> }{c.canComplete&&<button disabled={busy} onClick={()=>act(c,'complete')}>Mark free call complete</button>}{c.paymentBookingId&&<Link href={(c.isProvider?'/provider/dashboard/bookings/':'/account/bookings/')+c.paymentBookingId}>Payment and booking details</Link>}{c.meetingUrl&&<a href={c.meetingUrl} target="_blank" rel="noreferrer">Join confirmed Zoom call</a>}</article>)}</section>;
+}

@@ -58,6 +58,11 @@ export async function DELETE(request: Request) {
     WHERE project.customer_id=$1 OR provider.user_id=$1 LIMIT 1`, [session.user.id]);
   if (projectRecords.rowCount) return NextResponse.json({ error: "This account has hourly-project records shared with another participant. Contact support to reconcile any remaining work or payments and complete account deletion safely." }, { status: 409 });
 
+  // Call appointments and settlement evidence are shared with the other participant.
+  // Never delete payment credentials before discovering retained call foreign keys.
+  const callRecords = await database.query("SELECT 1 FROM calendly_calls WHERE customer_id=$1 OR provider_user_id=$1 LIMIT 1", [session.user.id]);
+  if (callRecords.rowCount) return NextResponse.json({ error: "This account has shared call records. Contact support to reconcile appointments or payments and complete account deletion safely." }, { status: 409 });
+
   const settingsResult = await database.query<{ consumer_stripe_customer_id: string | null; consumer_stripe_mode: "test" | "live" | null; profile_image_key: string | null }>(
     "SELECT consumer_stripe_customer_id, consumer_stripe_mode, profile_image_key FROM user_settings WHERE user_id = $1",
     [session.user.id],

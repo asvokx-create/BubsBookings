@@ -848,6 +848,7 @@ export async function POST(request: Request) {
   if (!claimed.rowCount) return NextResponse.json({ received: true, duplicate: true });
   try {
     await processEvent(event);
+    if (process.env.CALENDLY_CALL_BOOKINGS_ENABLED === "true" || process.env.CALENDLY_CALL_RECOVERY_ENABLED === "true") await (await import("@/lib/calendly-call-runtime")).wakeCallForStripeObject(event.data.object as {id?:string;metadata?:Record<string,string>|null});
     await database.query("UPDATE stripe_webhook_events SET status = 'processed', processed_at = now() WHERE id = $1", [event.id]);
     return NextResponse.json({ received: true });
   } catch (error) {

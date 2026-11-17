@@ -68,6 +68,15 @@ export async function GET(request: Request) {
     const hourlyProjectHistory = await rows(`SELECT audit.* FROM hourly_project_audit audit JOIN hourly_projects project ON project.id=audit.project_id
       JOIN provider_profiles provider ON provider.id=project.provider_id WHERE project.customer_id=$1 OR provider.user_id=$1 ORDER BY audit.created_at`, [userId]);
 
+    // Explicit participant data only: never export OAuth tokens, upstream payloads,
+    // Checkout links, opaque reconciliation markers, or the other party's secrets.
+    const calendlyCalls = await rows(`SELECT id,event_name,starts_at,ends_at,billing_mode,state,financial_snapshot,
+      CASE WHEN customer_id=$1 THEN attendee_snapshot ELSE jsonb_build_object('name',attendee_snapshot->>'name') END AS attendee,
+      disclosure_version,disclosure_accepted_at,provider_accepted_at,cancel_requested_at,created_at
+      FROM calendly_calls WHERE customer_id=$1 OR provider_user_id=$1 ORDER BY created_at`, [userId]);
+    const callCancellations = await rows(`SELECT x.call_id,x.actor_role,x.reason,x.requested_at,x.window_hours,x.late_cancellation,x.refund_required,x.external_cancelled_at,x.native_cancelled_at,x.completed_at
+      FROM calendly_call_cancellations x JOIN calendly_calls c ON c.id=x.call_id WHERE c.customer_id=$1 OR c.provider_user_id=$1 ORDER BY x.requested_at`, [userId]);
+
     const providerData = providerId ? {
       profile: providerResult.rows[0],
       companies: await rows("SELECT * FROM provider_companies WHERE provider_id = $1 ORDER BY created_at", [providerId]),
@@ -96,6 +105,8 @@ export async function GET(request: Request) {
       hourlyProjects: hourlyProjects.map(row => row.project),
       hourlyTimeEntries,
       hourlyProjectHistory,
+      calendlyCalls,
+      callCancellations,
       jobRequests,
       quotes,
       conversations,

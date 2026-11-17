@@ -11,6 +11,8 @@ export async function POST(request: Request) {
   const configuredSecret = process.env.CRON_SECRET;
   const suppliedSecret = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   if (!secureSecretMatches(configuredSecret, suppliedSecret)) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  const calendlyCalls = process.env.CALENDLY_CALL_BOOKINGS_ENABLED === "true" || process.env.CALENDLY_CALL_RECOVERY_ENABLED === "true"
+    ? await (await import("@/lib/calendly-call-runtime")).processDueCalendlyCalls() : undefined;
   const releases = await releaseDuePayouts();
   const affiliateCommissionsAdvanced = await advanceAffiliateCommissions();
   const affiliateMilestones = await reconcileAffiliateMilestones();
@@ -20,5 +22,5 @@ export async function POST(request: Request) {
   const expiredRequests = await expireStaleJobRequests();
   const requestNotifications = await processJobRequestNotificationQueue();
   const complimentaryPro = await reconcileExpiredComplimentaryProGrants();
-  return NextResponse.json({ ok: true, ...releases, affiliateCommissionsAdvanced, affiliateMilestones, affiliateMilestoneEmails, affiliatePayouts, ownerPayout, ...expiredRequests, ...requestNotifications, ...complimentaryPro });
+  return NextResponse.json({ ok: true, calendlyCalls, ...releases, affiliateCommissionsAdvanced, affiliateMilestones, affiliateMilestoneEmails, affiliatePayouts, ownerPayout, ...expiredRequests, ...requestNotifications, ...complimentaryPro });
 }
