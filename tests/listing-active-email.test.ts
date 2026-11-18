@@ -190,7 +190,7 @@ test('manual send targets only selected listing; uncertain deliveries cannot be 
 
 test('admin UI and API require explicit selected-listing confirmation and authentication', () => {
   const route = fs.readFileSync(new URL('../app/api/admin/accounts/[userId]/route.ts', import.meta.url), 'utf8');
-  const ui = fs.readFileSync(new URL('../components/admin-dashboard.tsx', import.meta.url), 'utf8');
+  const ui = fs.readFileSync(new URL('../components/admin-dashboard.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(route, /getAdminSession/); assert.match(route, /body.confirmed !== true/);
   assert.match(route, /actorUserId: session.user.id/);
   assert.match(ui, /window.confirm\(`Send the listing-active email/);
@@ -199,7 +199,7 @@ test('admin UI and API require explicit selected-listing confirmation and authen
 });
 
 test('closing or switching accounts prevents stale fetch and send refresh from reopening old account', async () => {
-  const ui = fs.readFileSync(new URL('../components/admin-dashboard.tsx', import.meta.url), 'utf8');
+  const ui = fs.readFileSync(new URL('../components/admin-dashboard.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const methods = ui.slice(ui.indexOf('  async function openAccount(account: Account)'), ui.indexOf('  useEffect(() => {\n    if (!selectedAccount)'));
   const pending: Array<(value: unknown) => void> = [];
   let selected: unknown; let details: unknown;

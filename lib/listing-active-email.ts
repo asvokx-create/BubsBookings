@@ -12,6 +12,7 @@ export function listingActiveEmailPayload(row: Listing): Payload {
   const firstName = row.name?.trim().split(/\s+/)[0] || "there";
   return {
     to: row.email, userId: row.user_id, emailType: "listing_active",
+    renderVersion: "stacked-actions-v1",
     idempotencyKey: `listing-active-${row.service_id}`,
     subject: "Your listing is now active on BubsBookings!",
     heading: `You're live, ${firstName}!`,
