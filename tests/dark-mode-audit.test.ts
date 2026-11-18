@@ -155,7 +155,7 @@ test("provider settings and premium homepage media use restrained dark surfaces"
 
   assert.match(dashboard, /data-provider-settings-hub/);
   assert.match(css, /section\[data-provider-settings-hub\] \.grid > a[\s\S]*?background: var\(--bb-surface-muted\) !important/);
-  assert.match(showcase, /premium-laptop/);
+  assert.match(showcase, /home-provider-showcase\.module\.css/);
   assert.match(css, /html\[data-theme="dark"\] \.premium-home[\s\S]*?background: #0c110e/);
   assert.match(home, /ServiceListingCard/);
   assert.match(serviceCard, /className="premium-service-image"/);
