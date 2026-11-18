@@ -76,23 +76,24 @@ async function updateSubscription(subscription: Stripe.Subscription, eventCreate
         AND complimentary.revoked_at IS NULL AND complimentary.starts_at <= now()
         AND (complimentary.expires_at IS NULL OR complimentary.expires_at > now())) AS active`, [providerId]);
     const effectivePro = active || Boolean(complimentary.rows[0]?.active);
+    // Keep bind positions contiguous: an unused parameter has no PostgreSQL type.
     const updated = await client.query<{ id: string }>(`UPDATE provider_profiles SET
-        plan = CASE WHEN $12 THEN 'pro' ELSE 'starter' END,
+        plan = CASE WHEN $11 THEN 'pro' ELSE 'starter' END,
         stripe_subscription_id = $2,
         stripe_subscription_checkout_session_id = NULL,
-        stripe_subscription_status = $5,
-        stripe_current_period_end = CASE WHEN $6::bigint IS NULL THEN NULL ELSE to_timestamp($6) END,
-        stripe_cancel_at_period_end = $10,
-        stripe_subscription_event_created_at = COALESCE($11, stripe_subscription_event_created_at),
-        stripe_billing_mode = $7,
-        extra_team_seats = CASE WHEN $4 THEN $8 ELSE 0 END,
-        stripe_team_seat_item_id = CASE WHEN $4 THEN $9 ELSE NULL END,
-        pro_trial_used_at_test = CASE WHEN $5 = 'trialing' AND $7 = 'test' THEN COALESCE(pro_trial_used_at_test, now()) ELSE pro_trial_used_at_test END,
-        pro_trial_used_at_live = CASE WHEN $5 = 'trialing' AND $7 = 'live' THEN COALESCE(pro_trial_used_at_live, now()) ELSE pro_trial_used_at_live END
+        stripe_subscription_status = $4,
+        stripe_current_period_end = CASE WHEN $5::bigint IS NULL THEN NULL ELSE to_timestamp($5) END,
+        stripe_cancel_at_period_end = $9,
+        stripe_subscription_event_created_at = COALESCE($10, stripe_subscription_event_created_at),
+        stripe_billing_mode = $6,
+        extra_team_seats = CASE WHEN $3 THEN $7 ELSE 0 END,
+        stripe_team_seat_item_id = CASE WHEN $3 THEN $8 ELSE NULL END,
+        pro_trial_used_at_test = CASE WHEN $4 = 'trialing' AND $6 = 'test' THEN COALESCE(pro_trial_used_at_test, now()) ELSE pro_trial_used_at_test END,
+        pro_trial_used_at_live = CASE WHEN $4 = 'trialing' AND $6 = 'live' THEN COALESCE(pro_trial_used_at_live, now()) ELSE pro_trial_used_at_live END
       WHERE id::text = $1 AND plan <> 'owner'
-        AND ($11::bigint IS NULL OR stripe_subscription_event_created_at IS NULL OR $11 >= stripe_subscription_event_created_at)
-        AND NOT ($11::bigint IS NOT NULL AND stripe_subscription_status = 'canceled' AND $5 <> 'canceled')
-      RETURNING id::text`, [providerId, subscription.id, plan, active, subscription.status, periodEnd ?? null, mode,
+        AND ($10::bigint IS NULL OR stripe_subscription_event_created_at IS NULL OR $10 >= stripe_subscription_event_created_at)
+        AND NOT ($10::bigint IS NOT NULL AND stripe_subscription_status = 'canceled' AND $4 <> 'canceled')
+      RETURNING id::text`, [providerId, subscription.id, active, subscription.status, periodEnd ?? null, mode,
         teamSeats.quantity, teamSeats.itemId, subscription.cancel_at_period_end, eventCreated, effectivePro]);
     if (updated.rows[0] && !effectivePro) {
       await client.query("UPDATE provider_team_members SET status = 'inactive' WHERE provider_id::text = $1 AND status IN ('pending', 'active')", [providerId]);
