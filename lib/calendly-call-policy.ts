@@ -14,7 +14,7 @@ export type CalendlyCallRow = {
  state:CallState; version:number; provider_accepted_at:string|null; cancel_requested_at:string|null;
  stripe_customer_id:string|null; checkout_session_id:string|null; payment_intent_id:string|null;
  checkout_origin:string|null; external_event_uri:string|null; external_invitee_uri:string|null; meeting_url:string|null;
- payment_booking_id:string|null; last_error:string|null; created_at:string;
+ calendar_check_pending?:boolean; payment_booking_id:string|null; last_error:string|null; created_at:string;
 };
 export type CallOperationKind = 'create_checkout'|'create_invitee'|'capture'|'cancel_invitee'|'cancel_authorization'|'refund';
 export type CallOperation = {id:string; call_id:string; kind:CallOperationKind; attempted_at:string|null; completed_at:string|null; result:unknown; created_at:string};

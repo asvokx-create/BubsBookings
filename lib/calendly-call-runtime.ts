@@ -81,8 +81,9 @@ export async function deliverCallNotifications(){
 }
 export async function processDueCalendlyCalls(){
  if(!callRecoveryEnabled())return {enabled:false,checked:0,failed:0,notifications:0};
- // Advance due time atomically so overlapping cron invocations take different work.
- const due=await database.query<{id:string}>(`WITH due AS (SELECT id FROM calendly_calls WHERE next_check_at<=now() AND provider_accepted_at IS NOT NULL AND state NOT IN ('cancelled','failed','completed') ORDER BY next_check_at,created_at LIMIT 20 FOR UPDATE SKIP LOCKED) UPDATE calendly_calls c SET next_check_at=now()+interval '2 minutes' FROM due WHERE c.id=due.id RETURNING c.id::text`);
+ // Claim oldest-attempted due work first, so repeated transient checks cannot
+ // starve other appointments. Advance due time atomically across cron instances.
+ const due=await database.query<{id:string}>(`WITH due AS (SELECT id FROM calendly_calls WHERE next_check_at<=now() AND provider_accepted_at IS NOT NULL AND state NOT IN ('cancelled','failed','completed') ORDER BY last_checked_at NULLS FIRST,next_check_at,created_at LIMIT 20 FOR UPDATE SKIP LOCKED) UPDATE calendly_calls c SET next_check_at=now()+interval '2 minutes' FROM due WHERE c.id=due.id RETURNING c.id::text`);
  let failed=0;for(const row of due.rows){try{await reconcileCallRuntime(row.id);}catch{failed++;}}
  return {enabled:true,checked:due.rows.length,failed,notifications:await deliverCallNotifications(),reviewAlerts:await deliverCallReviewAlerts()};
 }

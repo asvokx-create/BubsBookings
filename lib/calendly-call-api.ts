@@ -15,6 +15,16 @@ export class CalendlyCallTransportError extends Error {
   dispatched: boolean; status?: number;
   constructor(dispatched: boolean, status?: number) { super("Calendly request did not complete successfully."); this.dispatched = dispatched; this.status = status; }
 }
+/** Only transport failures known to be temporary may defer an established call check. */
+function temporarilyUnavailable(error: unknown): boolean {
+  return error instanceof CalendlyCallTransportError && (
+    (error.dispatched && error.status === undefined) || error.status === 408 || error.status === 429
+    || (error.status !== undefined && error.status >= 500 && error.status <= 599));
+}
+function unavailableResult(error: unknown): {status: 'unavailable'; localRateLimited?: boolean} {
+  return error instanceof CalendlyCallTransportError && !error.dispatched && error.status === 429
+    ? {status: 'unavailable', localRateLimited: true} : {status: 'unavailable'};
+}
 export class CalendlyCallOutcomeError extends Error {
   outcome: "not_sent" | "rejected" | "unknown"; references?: CalendlyCallReferences;
   constructor(outcome: "not_sent" | "rejected" | "unknown", references?: CalendlyCallReferences) { super(`Calendly booking outcome: ${outcome}.`); this.outcome = outcome; this.references = references; }
@@ -147,7 +157,7 @@ async function collection(read: CalendlyCallTransport, pathname: string, params:
   }
   throw new Error("Reconciliation limit reached.");
 }
-export async function reconcileCalendlyCall(read: CalendlyCallTransport, identity: CalendlyCallIdentity, refs?: CalendlyCallReferences): Promise<{ status: "found"; mapping: CalendlyCallMapping } | { status: "unknown" | "ambiguous" }> {
+export async function reconcileCalendlyCall(read: CalendlyCallTransport, identity: CalendlyCallIdentity, refs?: CalendlyCallReferences): Promise<{ status: "found"; mapping: CalendlyCallMapping } | { status: "unknown" | "ambiguous" } | {status: "unavailable"; localRateLimited?: boolean}> {
   try {
     if (refs) return { status: "found", mapping: await readMappedCalendlyCall(read, identity, refs) };
     validateIdentity(identity);
@@ -160,11 +170,11 @@ export async function reconcileCalendlyCall(read: CalendlyCallTransport, identit
       for (const invitee of invitees) {
         if (!invitee.tracking || object(invitee.tracking).utm_content !== marker(identity)) continue;
         const candidate = { eventUri, inviteeUri: uri(invitee.uri, inviteePath) };
-        try { found.push(await readMappedCalendlyCall(read, identity, candidate)); } catch { return { status: "ambiguous" }; }
+        try { found.push(await readMappedCalendlyCall(read, identity, candidate)); } catch (error) { return temporarilyUnavailable(error) ? unavailableResult(error) : {status: "ambiguous"}; }
       }
     }
     return found.length === 1 ? { status: "found", mapping: found[0] } : { status: found.length > 1 ? "ambiguous" : "unknown" };
-  } catch { return { status: "unknown" }; }
+  } catch (error) { return temporarilyUnavailable(error) ? unavailableResult(error) : {status: "unknown"}; }
 }
 export async function cancelMappedCalendlyCall(send: CalendlyCallTransport, identity: CalendlyCallIdentity, refs: CalendlyCallReferences): Promise<CalendlyCallMapping> {
   let mapped: CalendlyCallMapping;

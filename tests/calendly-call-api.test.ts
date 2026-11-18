@@ -34,3 +34,28 @@ test('untrusted meeting links never appear as ready',async()=>{for(const join_ur
 test('create rechecks persisted buffer snapshot before dispatch',async()=>{const h=harness();await assert.rejects(createCalendlyCallOnce(h.send,{...identity,expectedBuffers:{beforeMinutes:0,afterMinutes:10}},0),outcome('not_sent'));assert.equal(h.calls.filter(c=>c.method==='POST').length,0);});
 test('unsafe reconciliation pagination is unknown, never follows supplied URL',async()=>{const paths:string[]=[];const send:CalendlyCallTransport=async(_method,path)=>{paths.push(path);return{collection:[],pagination:{next_page:'https://attacker.example/credentials'}};};assert.deepEqual(await reconcileCalendlyCall(send,identity),{status:'unknown'});assert.equal(paths.length,1);assert.ok(paths[0].startsWith('/scheduled_events?'));});
 test('cancel timeout is unknown and never automatically retries',async()=>{const h=harness({postError:new CalendlyCallTransportError(true)});await assert.rejects(cancelMappedCalendlyCall(h.send,identity,refs),outcome('unknown'));assert.equal(h.calls.filter(c=>c.method==='POST').length,1);});
+test('only temporary GET transport failures return unavailable for mapped and discovery reads',async()=>{
+ for(const error of [new CalendlyCallTransportError(true),new CalendlyCallTransportError(true,408),new CalendlyCallTransportError(true,429),new CalendlyCallTransportError(false,429),new CalendlyCallTransportError(true,500),new CalendlyCallTransportError(true,503)]){
+  const read:CalendlyCallTransport=async()=>{throw error;};
+  assert.equal((await reconcileCalendlyCall(read,identity,refs)).status,'unavailable');
+  assert.equal((await reconcileCalendlyCall(read,identity)).status,'unavailable');
+ }
+ for(const error of [new CalendlyCallTransportError(false),new CalendlyCallTransportError(true,200),new CalendlyCallTransportError(true,401),new CalendlyCallTransportError(true,403),new CalendlyCallTransportError(true,404),new Error('Malformed or identity mismatch')]){
+  assert.equal((await reconcileCalendlyCall(async()=>{throw error;},identity,refs)).status,'unknown');
+ }
+ assert.equal((await reconcileCalendlyCall(async()=>({resource:{}}),identity,refs)).status,'unknown');
+});
+test('temporary candidate GET is unavailable, but invalid candidate identity remains ambiguous',async()=>{
+ const h=harness({events:[scheduled()]});
+ assert.equal((await reconcileCalendlyCall(async(method,path,body)=>{
+  if(path===new URL(refs.eventUri).pathname)throw new CalendlyCallTransportError(true,503);
+  return h.send(method,path,body);
+ },identity)).status,'unavailable');
+ assert.equal((await reconcileCalendlyCall(harness({events:[scheduled()],event:{event_memberships:[{user:'wrong'}]}}).send,identity)).status,'ambiguous');
+});
+test('only local undispatched 429 supplies localRateLimited metadata',async()=>{
+ assert.deepEqual(await reconcileCalendlyCall(async()=>{throw new CalendlyCallTransportError(false,429);},identity,refs),{status:'unavailable',localRateLimited:true});
+ for(const error of [new CalendlyCallTransportError(true,429),new CalendlyCallTransportError(true,503),new CalendlyCallTransportError(true)]){
+  assert.deepEqual(await reconcileCalendlyCall(async()=>{throw error;},identity,refs),{status:'unavailable'});
+ }
+});

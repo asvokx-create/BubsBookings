@@ -14,7 +14,7 @@ export type CallPayments={
 export type CallEngineDependencies={
  store:CallStore;
  payments:CallPayments;
- calendly:{prepare(call:CalendlyCallRow):Promise<void>;create(call:CalendlyCallRow,operationId:string):Promise<CallMapping>;read(call:CalendlyCallRow,operationId:string):Promise<{status:'found';mapping:CallMapping}|{status:'unknown'|'ambiguous'}>;cancel(call:CalendlyCallRow,mapping:CallMapping):Promise<CallMapping>};
+ calendly:{prepare(call:CalendlyCallRow):Promise<void>;create(call:CalendlyCallRow,operationId:string):Promise<CallMapping>;read(call:CalendlyCallRow,operationId:string):Promise<{status:'found';mapping:CallMapping}|{status:'unknown'|'ambiguous'}|{status:'unavailable';localRateLimited?:boolean}>;cancel(call:CalendlyCallRow,mapping:CallMapping):Promise<CallMapping>};
  /** Rechecks eligibility, immutable account generation, and holds; no external send. */
  validate(call:CalendlyCallRow):Promise<void>;
  releaseHold(call:CalendlyCallRow):Promise<void>;
@@ -82,6 +82,11 @@ export async function reconcileCalendlyCall(callId:string,deps:CallEngineDepende
    const rejected=Boolean(creation.completed_at&&creation.result&&typeof creation.result==='object'&&'rejected' in creation.result&&creation.result.rejected===true);
    if((creation.attempted_at&&!rejected)||call.external_event_uri){
     const found=await deps.calendly.read(call,creation.id);
+    if(found.status==='unavailable' && call.state==='confirmed' && !call.cancel_requested_at && !linkedCancellation
+      && call.external_event_uri && call.external_invitee_uri && call.meeting_url
+      && (call.billing_mode==='free' || (call.payment_booking_id && payment?.status==='captured'
+        && payment.amountReceivedCents===call.financial_snapshot.customerTotalCents && payment.chargeId))
+      && await store.deferCalendarCheck(callId,found.localRateLimited===true)) return;
     if(found.status!=='found'){await store.transition(callId,'review',found.status==='ambiguous'?'Multiple calendar results require review. Do not retry booking.':'Calendar booking outcome is still unknown. Do not retry.');return;}
     mapping=found.mapping;await persistMapping(store,call,mapping);
    }
@@ -109,7 +114,7 @@ export async function reconcileCalendlyCall(callId:string,deps:CallEngineDepende
    }
    const cancelNeeded=Boolean((startPassed&&!creation.attempted_at)||rejected||call.cancel_requested_at||mapping?.status==='canceled'||mapping?.meetingStatus==='failed'||payment?.status==='failed'||payment?.status==='cancelled'||(payment?.status==='captured'&&!mapping));
    if(cancelNeeded){await compensate(store,call,creation,checkout,mapping,payment,deps);return;}
-   if(call.billing_mode==='free'&&call.state==='confirmed'&&mapping?.status==='active'&&mapping.meetingStatus==='ready')return;
+   if(call.billing_mode==='free'&&call.state==='confirmed'&&mapping?.status==='active'&&mapping.meetingStatus==='ready'){await store.confirmed(callId,{});return;}
    if(!mapping){
     if(call.billing_mode==='paid'&&(!payment||payment.status==='pending'))return;
     if(call.billing_mode==='paid'&&(!payment||!authorizationUsable(payment,call,now))){await compensate(store,call,creation,checkout,null,payment,deps);return;}
@@ -126,6 +131,7 @@ export async function reconcileCalendlyCall(callId:string,deps:CallEngineDepende
     await persistMapping(store,call,mapping);await store.finish(creation.id,{eventUri:mapping.eventUri,inviteeUri:mapping.inviteeUri});
    }
    call=(await store.get(callId))!;
+   if(!call||['cancelled','failed','completed'].includes(call.state))return;
    if(call.cancel_requested_at||mapping.status==='canceled'||mapping.meetingStatus==='failed'){await compensate(store,call,creation,checkout,mapping,payment,deps);return;}
    if(mapping.meetingStatus!=='ready'||!mapping.meetingUrl){if(call.billing_mode==='paid'&&(!payment||!authorizationUsable(payment,call,deps.now?.()??Date.now()))){await compensate(store,call,creation,checkout,mapping,payment,deps);return;}await store.patch(callId,{state:'confirming'});return;}
    if(!call.payment_booking_id){try{await deps.validate(call);}catch{await compensate(store,call,creation,checkout,mapping,payment,deps);return;}}

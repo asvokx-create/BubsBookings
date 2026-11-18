@@ -478,11 +478,11 @@ export async function calendlyCallRequest<T>(
   let token: string;
   try {
     await verify();
-    if (!await enforceRateLimit({ request, userId: binding.ownerUri, bucket: "calendly_calls_upstream", limit: 20, windowSeconds: 60 })) throw new Error("Rate limited.");
+    if (!await enforceRateLimit({ request, userId: binding.ownerUri, bucket: "calendly_calls_upstream", limit: 20, windowSeconds: 60 })) throw new CalendlyCallTransportError(false, 429);
     const auth = await connectionToken(binding.connectionId);
     if (auth.connection.provider_id !== binding.providerId || auth.connection.calendly_user_uri !== binding.ownerUri || auth.connection.connected_at !== binding.connectedAt) throw new Error("Connection changed.");
     await verify(); token = auth.token;
-  } catch { throw new CalendlyCallTransportError(false); }
+  } catch (error) { if (error instanceof CalendlyCallTransportError) throw error; throw new CalendlyCallTransportError(false); }
   let response: Response;
   try {
     response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },

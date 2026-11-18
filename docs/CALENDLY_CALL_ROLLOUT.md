@@ -34,9 +34,21 @@ Notifications are durable **in-app BubsBookings** notifications to both particip
 
 To pause new scheduling while draining existing work, set bookings false and recovery true. Participant status/read/cancel access remains available. Do not turn recovery off while unresolved appointments, authorizations, refunds or held funds remain. Normal OAuth scopes are intentionally not silently expanded.
 
+## Temporary calendar read failures
+
+Network failures and GET responses408,429 and5xx (including the local owner rate limit) can defer verification of an already-confirmed, otherwise healthy appointment. They do not by themselves permanently freeze its payment. A durable `calendar_check_pending` flag blocks native completion and new payout processing until authoritative verification succeeds. Authentication, identity/mapping changes and malformed responses remain review cases. No existing financial freeze is automatically removed.
+
+Transient checks retry after at least60 seconds, scaling to12 seconds per active accepted call for the owner so sustained failures cannot monopolize the budget. Successful routine checks wait at least5 minutes, scaling to12 seconds per active accepted call for the Calendly owner, leaving capacity within the shared20-request/minute limit. Local rate-limit deferrals retry at the next fixed-minute budget window without losing queue priority. Due work is claimed oldest-attempted first. Review checks use the same workload scaling with a5-minute minimum. Webhooks may expedite checks; large workloads can therefore still be rate limited and need monitoring.
+
+Confirmation and temporary-check updates lock native booking before call, then recheck terminal/cancellation state. Stale reconciliation must not reopen or freeze a completed/cancelled call. Real PostgreSQL concurrency testing remains required.
+
+## Reconstruction provenance
+
+The original uncommitted November17 review checkout was unavailable. These safety fixes were reconstructed on November18 from PR24 commit `f3906adbdb925de86b077fb9f4533b57e5e79018` and review findings, then independently reverified. This is not claimed to be the original lost tree. A local commit and private transfer archive preserve this reconstruction; neither publication nor deployment is authorized.
+
 ## Required rollout checks
 
-- Apply additive migrations114,115 and118–121 on an isolated restored database before production; repeat migrations and verify existing booking/timeoff writers.
+- Apply additive migrations114,115 and118–122 on an isolated restored database before production; repeat migrations and verify existing booking/timeoff writers.
 - Verify the selected provider's current Calendly identity/generation, explicit required read/write grants, account/API eligibility, one-to-one unpaid Calendly event, fixed duration, buffers and Zoom setup. Calendly event payment must be off because BubsBookings owns the paid flow.
 - Verify signed webhook delivery and production heartbeat/cron monitoring. Ensure administrative review notifications reach an active account.
 - Exercise isolated sandbox authorization→appointment→capture, declined/expired authorization, slot race, unknown create/capture/cancel response, refund recovery, account disconnect/reconnect, webhook reversal/duplication and Zoom generation delay. Use synthetic records and designated test invitees only; never real customer funds or unsolicited invitations.
