@@ -1,7 +1,7 @@
 .showcase { width: 100%; min-width: 0; align-self: center; margin: 0; padding-block: 1.5rem; }
 .preview { overflow: hidden; border: 1px solid #d6dfd5; border-radius: 1rem; background: #f7f8f2; color: #183126; box-shadow: 0 1rem 3rem #06180f40; }
 .brand { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .85rem; border-bottom: 1px solid #dce3d9; font-size: .875rem; }
-.brand > span { padding: .2rem .45rem; border-radius: 1rem; background: #e5ede2; color: #385744; font-size: .65rem; font-weight: 700; text-transform: uppercase; }
+.providerBadge { padding: .2rem .45rem; border-radius: 1rem; background: #e5ede2; color: #385744; font-size: .65rem; font-weight: 700; text-transform: uppercase; }
 .workspace { display: grid; grid-template-columns: minmax(0, 9rem) minmax(0, 1fr); gap: .85rem; padding: .85rem; }
 .sidebar { display: flex; flex-direction: column; gap: .35rem; border-radius: .85rem; padding: .65rem; background: #0c3d2b; color: #d7e5da; }
 .sidebar > small { margin: .4rem .35rem .15rem; font-size: .65rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }

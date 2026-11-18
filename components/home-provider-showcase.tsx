@@ -9,7 +9,7 @@ export default function HomeProviderShowcase() {
     <figure className={styles.showcase}>
       <div className={styles.preview} role="img" aria-label="Provider dashboard overview: a green navigation rail, earnings and booking summaries, latest requests, and listings. Sample empty account; this preview is not interactive.">
         <div aria-hidden="true">
-          <div className={styles.brand}><BrandMark className="h-6 w-6" /><strong>BubsBookings</strong><span>Provider</span></div>
+          <div className={styles.brand}><BrandMark className="h-6 w-6" /><strong>BubsBookings</strong><span className={styles.providerBadge}>Provider</span></div>
           <div className={styles.workspace}>
             <div className={styles.sidebar}>
               <small>Business</small>
