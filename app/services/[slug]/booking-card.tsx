@@ -2,6 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import Link from "next/link";
+import { missingBookingRequestDetails } from "@/lib/booking-request-details";
 import HourlyProjectRequest from "@/components/hourly-project-request";
 import BookingDatePicker from "@/components/booking-date-picker";
 import CustomSelect from "@/components/custom-select";
@@ -140,10 +141,6 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
       setError("Choose whether you want this service in person or remotely.");
       return;
     }
-    if (deliveryMethod === "IN_PERSON" && (!addressLine1.trim() || !city.trim() || !/^[A-Za-z]{2}$/.test(state.trim()) || !/^\d{5}(?:-\d{4})?$/.test(postalCode.trim()))) {
-      setError("Add a complete US service address and date to see available times.");
-      return;
-    }
     if (!date) { setError("Choose a date to see available times."); return; }
     setError("");
     setLoading(true);
@@ -165,12 +162,9 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
   }
 
   async function confirmRequest() {
-    if (!time) {
-      setError("Choose an available time to continue.");
-      return;
-    }
-    if (quoteOnly && notes.trim().length < 3) {
-      setError("Describe what you need so the provider can prepare an accurate quote.");
+    const missing = missingBookingRequestDetails({ deliveryMethod, addressLine1, city, state, postalCode, date, time, quoteOnly, notes, bookingQuestions, answers });
+    if (missing.length) {
+      setError(`Before sending your request, complete: ${missing.join("; ")}.`);
       return;
     }
     setError("");
@@ -232,7 +226,7 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
         <p className="rounded-full bg-[#f1f0eb] px-3 py-1.5 text-xs font-semibold text-[#5f7067]">{hourlyConfig ? "Estimated service subtotal" : `Estimated time: ${duration}`}</p>
       </div>
 
-      <form onSubmit={checkAvailability} className="mt-7 space-y-3">
+      <form noValidate onSubmit={checkAvailability} className="mt-7 space-y-3">
         {hourlyConfig && <fieldset className="rounded-2xl border border-[#183126]/10 bg-[#f5f7f2] p-4"><legend className="px-1 text-sm font-bold">Choose your booking duration</legend><label className="mt-3 block"><span className="mb-2 block text-xs font-bold uppercase tracking-wider text-[#708078]">Duration</span><CustomSelect ariaLabel="Booking duration" value={selectedDurationMinutes} onChange={(value) => { setSelectedDurationMinutes(Number(value)); setTime(""); setTimeSlots([]); setStep("details"); clearCouponPricing(); }} buttonClassName="min-h-12 w-full rounded-xl border border-[#183126]/15 bg-white px-4 text-sm font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#4d725d]" ariaDescribedBy="hourly-duration-help">{hourlyDurationOptions(hourlyConfig).map((minutes) => <option key={minutes} value={minutes}>{formatDurationMinutes(minutes)} · ${(calculateHourlyBasePriceCents(hourlyConfig.hourlyRateCents, minutes) / 100).toFixed(2)}</option>)}</CustomSelect></label><p id="hourly-duration-help" className="mt-2 text-xs leading-5 text-[#718078]">{formatDurationMinutes(hourlyConfig.minimumDurationMinutes)} minimum · {hourlyConfig.billingIncrementMinutes}-minute increments{hourlyConfig.maximumDurationMinutes ? ` · ${formatDurationMinutes(hourlyConfig.maximumDurationMinutes)} maximum` : ""}. Changing duration recalculates availability.</p></fieldset>}
         {!quoteOnly && packages.length > 0 && <fieldset><legend className="mb-3 text-xs font-bold uppercase tracking-wider text-[#708078]">Choose a package</legend><div className="grid gap-2">{packages.map((item) => <label key={item.id} className={`cursor-pointer rounded-2xl border p-4 ${packageId === item.id ? "border-[#183126] bg-[#edf3e7]" : "border-[#183126]/12 bg-white"}`}><input type="radio" className="sr-only" name="package" checked={packageId === item.id} onChange={() => { setPackageId(item.id); clearCouponPricing(); }} /><span className="flex items-start justify-between gap-3"><span><strong className="block">{item.name}</strong><span className="mt-1 block text-xs leading-5 text-[#6d7c75]">{item.description}</span></span><strong className="shrink-0">${(item.priceCents / 100).toFixed(2)}</strong></span>{item.features.length > 0 && <span className="mt-2 block text-xs text-[#52665b]">{item.features.join(" · ")}</span>}</label>)}</div></fieldset>}
         {!quoteOnly && addOns.length > 0 && <fieldset className="rounded-2xl bg-[#f5f7f2] p-4"><legend className="px-1 text-sm font-bold">Optional add-ons</legend><div className="mt-3 grid gap-2">{addOns.map((item) => { const quantity = addOnQuantities[item.id] ?? 0; return <div key={item.id} className="flex min-w-0 items-center gap-3 rounded-xl bg-white p-3"><label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3"><input type="checkbox" className="mt-1" checked={quantity > 0} onChange={(event) => { setAddOnQuantities((current) => ({ ...current, [item.id]: event.target.checked ? 1 : 0 })); clearCouponPricing(); }} /><span className="min-w-0"><strong className="block text-sm">{item.name} · +${(item.priceCents / 100).toFixed(2)}</strong>{item.description && <span className="block text-xs leading-5 text-[#718078]">{item.description}</span>}</span></label>{item.allowsQuantity && quantity > 0 && <CustomSelect ariaLabel={`${item.name} quantity`} value={quantity} onChange={(value) => { setAddOnQuantities((current) => ({ ...current, [item.id]: Number(value) })); clearCouponPricing(); }} buttonClassName="shrink-0 rounded-lg border border-[#183126]/15 px-2 py-2 text-sm">{Array.from({ length: item.maxQuantity }, (_, index) => index + 1).map((value) => <option key={value}>{value}</option>)}</CustomSelect>}</div>; })}</div></fieldset>}
@@ -241,7 +235,7 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
         {bookingQuestions.map((question) => <label key={question} className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-wider text-[#708078]">{question}</span><textarea required={!bookingDisabled} value={answers[question] ?? ""} onChange={(event) => setAnswers((current) => ({ ...current, [question]: event.target.value }))} maxLength={500} rows={2} className="w-full resize-none rounded-2xl border border-[#183126]/15 bg-[#faf9f5] px-4 py-3.5 text-sm outline-none transition focus:border-[#4d725d] focus:ring-2 focus:ring-[#4d725d]/10" /></label>)}
         {deliveryType === "BOTH" && <fieldset className="rounded-2xl bg-[#f5f7f2] p-4"><legend className="px-1 text-sm font-bold">How would you like this service?</legend><div className="mt-3 grid grid-cols-2 gap-2">{(["IN_PERSON", "REMOTE"] as const).map((method) => <label key={method} className={`flex min-h-12 cursor-pointer items-center justify-center rounded-xl border px-3 text-center text-sm font-bold ${deliveryMethod === method ? "border-[#183126] bg-[#183126] text-white" : "border-[#183126]/15 bg-white"}`}><input type="radio" className="sr-only" name="deliveryMethod" value={method} checked={deliveryMethod === method} onChange={() => { setDeliveryMethod(method); setError(""); }} />{method === "REMOTE" ? "Remote / online" : "In person"}</label>)}</div></fieldset>}
         {deliveryMethod !== "REMOTE" && <section className="rounded-2xl bg-[#f5f7f2] p-4">
-          <div className="mb-4 flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-sm">⌖</span><div><h3 className="text-sm font-bold">Where do you need the service?</h3><p className="mt-0.5 text-xs leading-5 text-[#6d7c75]">Your street address stays private until the provider accepts.</p></div></div>
+          <div className="mb-4 flex items-start gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white text-sm">⌖</span><div><h3 className="text-sm font-bold">Where do you need the service?</h3><p className="mt-0.5 text-xs leading-5 text-[#6d7c75]">You can check times without an address. Add it before requesting. Available times do not confirm that the provider serves your address. Your street address stays private until the provider accepts.</p></div></div>
           <div className="space-y-3">
             <label className="block"><span className="sr-only">Street address</span><input required={!bookingDisabled} autoComplete="address-line1" maxLength={120} value={addressLine1} onChange={(event) => setAddressLine1(event.target.value)} placeholder="Street address" className="w-full rounded-xl border border-[#183126]/15 bg-white px-4 py-3 text-sm outline-none transition focus:border-[#4d725d] focus:ring-2 focus:ring-[#4d725d]/10" /></label>
             <label className="block"><span className="sr-only">City</span><input required={!bookingDisabled} autoComplete="address-level2" maxLength={80} value={city} onChange={(event) => setCity(event.target.value)} placeholder="City" className="w-full rounded-xl border border-[#183126]/15 bg-white px-4 py-3 text-sm outline-none focus:border-[#4d725d]" /></label>
