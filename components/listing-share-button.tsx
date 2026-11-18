@@ -151,10 +151,10 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
   const dialog = open ? createPortal(
     <div className="listing-share-backdrop fixed inset-0 z-[320] grid place-items-end bg-black/55 sm:place-items-center sm:p-5" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
       <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="listing-share-title" className="listing-share-dialog max-h-[calc(100dvh-1rem)] w-full overflow-y-auto rounded-t-[2rem] border border-[#183126]/10 bg-[#fbfaf6] p-5 text-[#183126] shadow-2xl sm:max-w-md sm:rounded-[2rem] sm:p-7">
-        <div className="flex items-start justify-between gap-4">
-          <div><p className="text-xs font-extrabold uppercase tracking-[.14em] text-[#718078]">BubsBookings</p><h2 id="listing-share-title" className="mt-1 text-2xl font-bold">Share this {providerSlug ? "provider" : "service"}</h2><p className="mt-2 line-clamp-2 text-sm text-[#687970]">{title}</p></div>
+        <header className="listing-share-header flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1 [overflow-wrap:anywhere]"><p className="text-xs font-extrabold uppercase tracking-[.14em] text-[#718078]">BubsBookings</p><h2 id="listing-share-title" className="mt-1 text-2xl font-bold">Share this {providerSlug ? "provider" : "service"}</h2><p className="mt-2 line-clamp-2 text-sm text-[#687970]">{title}</p></div>
           <button type="button" onClick={() => setOpen(false)} aria-label="Close share menu" className="listing-share-close grid h-11 w-11 shrink-0 place-items-center rounded-full border border-[#183126]/15 bg-white"><UiIcon name="close" className="h-5 w-5" /></button>
-        </div>
+        </header>
 
         <button type="button" onClick={copyLink} className="listing-share-copy mt-5 flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#eee25a] px-5 py-3 text-sm font-bold text-[#183126] transition hover:bg-[#f6ea69] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#6b8d77]/40"><span aria-hidden="true">⧉</span>{copyState === "copied" ? "Link copied ✓" : "Copy link"}</button>
         <p aria-live="polite" role="status" className="mt-2 min-h-5 text-center text-xs font-semibold text-[#5f7168]">{copyState === "copied" ? `The canonical ${providerSlug ? "provider" : "listing"} link is ready to paste.` : copyState === "manual" ? "Copy was unavailable. Select the link below." : ""}</p>

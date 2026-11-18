@@ -1363,7 +1363,7 @@ html[data-theme="dark"] .expense-input:focus {
   transition: border-color .18s ease, background-color .18s ease;
 }
 
-.listing-share-dialog > div:first-child {
+.listing-share-dialog > .listing-share-header {
   flex-wrap: nowrap !important;
 }
 
@@ -2951,13 +2951,13 @@ html[data-theme="dark"] .public-site-search:hover { background: #29352f; }
 }
 .premium-service-content h3 {
   display: -webkit-box;
-  min-height: 2.45em;
+  min-height: 2.8em;
   overflow: hidden;
   color: #102d22;
   font-size: .98rem;
-  font-weight: 800;
-  letter-spacing: -.025em;
-  line-height: 1.27;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.4;
   overflow-wrap: normal;
   word-break: normal;
   -webkit-box-orient: vertical;
@@ -4093,7 +4093,7 @@ html[data-theme="dark"] .home-mobile-request p:last-child { color: var(--text-se
 .home-service-category { overflow: hidden; color: #63766c; font-size: .58rem; font-weight: 800; letter-spacing: .11em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .home-redesign .home-service-card-summary { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr); gap: .55rem; }
 .home-redesign .home-service-card-main { min-width: 0; }
-.home-redesign .home-service-card h3 { margin-top: .25rem; min-width: 0; font-size: .86rem; font-weight: 800; line-height: 1.25; overflow-wrap: normal; word-break: normal; }
+.home-redesign .home-service-card h3 { margin-top: .25rem; min-width: 0; font-size: .86rem; font-weight: 400; line-height: 1.25; overflow-wrap: normal; word-break: normal; }
 .home-service-provider-row { display: flex; min-width: 0; align-items: center; gap: .45rem; margin-top: .45rem; }
 .home-service-provider-avatar { width: 1.65rem; height: 1.65rem; border: 1px solid rgba(16, 45, 34, .1); font-size: .55rem; }
 .home-service-provider { display: block; overflow: hidden; color: #5d7167; font-size: .66rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
