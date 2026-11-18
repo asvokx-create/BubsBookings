@@ -42,3 +42,11 @@ Verify that:
 
 This change contains no automated recovery or production data changes.
 
+
+## November 18, 2026 revalidation on current main
+
+Reconstructed the prepared patch on freshly fetched main 3c3d0873d85f4c149beed85f4afaa5f0ac4442ce in an isolated checkout. The unmodified signed handler reproduced SQLSTATE 42P18; the minimal binding fix passed 50 signed-handler tests across PGlite and real localhost PostgreSQL 18.7, using Node 24.22.1. No external Stripe request occurred.
+
+Full current-main suite: 1,115 total, 1,106 passed, nine skipped, zero failures, exit 0. The first run had one pre-existing Windows CRLF source-slice failure in listing-active-email.test.ts. Temporarily normalizing components/admin-dashboard.tsx to LF, with no semantic diff, made the complete rerun pass. Original file bytes were then restored. Focused tests and independent review passed. Repository ESLint, optimized build and final TypeScript checks exited 0. An initial type check before generated Next types existed failed; the final post-build type check passed.
+
+No workflow edit is required: current CI already runs npm test with PostgreSQL enabled. No production impact count, real subscription test, recovery, push or deployment is claimed. After authorized deployment, current-state reconciliation still needs the deliberate procedure above; do not bulk replay historical events.
