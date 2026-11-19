@@ -1,7 +1,9 @@
+import { MAX_HOURLY_RATE_CENTS } from "./service-pricing.ts";
+
 /** Round the aggregate once, never each individual time entry. */
 export function calculateHourlyProjectPrice(totalSeconds: number, hourlyRateCents: number) {
   if (!Number.isSafeInteger(totalSeconds) || totalSeconds < 0 || totalSeconds > 31536000) throw new RangeError("Invalid tracked seconds.");
-  if (!Number.isSafeInteger(hourlyRateCents) || hourlyRateCents < 1 || hourlyRateCents > 10000000) throw new RangeError("Invalid hourly rate.");
+  if (!Number.isSafeInteger(hourlyRateCents) || hourlyRateCents < 1 || hourlyRateCents > MAX_HOURLY_RATE_CENTS) throw new RangeError("Invalid hourly rate.");
   const billableMinutes = Math.ceil(totalSeconds / 60);
   const subtotalCents = Number((BigInt(billableMinutes) * BigInt(hourlyRateCents) + BigInt(30)) / BigInt(60));
   if (subtotalCents + 299 > 99999999) throw new RangeError("Project exceeds the supported payment limit.");

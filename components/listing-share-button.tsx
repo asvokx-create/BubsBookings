@@ -59,9 +59,11 @@ async function copyText(value: string) {
   input.style.opacity = "0";
   document.body.appendChild(input);
   input.select();
-  const copied = document.execCommand("copy");
-  input.remove();
-  return copied;
+  try {
+    return document.execCommand("copy");
+  } finally {
+    input.remove();
+  }
 }
 
 export default function ListingShareButton({ serviceId, slug, providerSlug, title, description, action = "share", className = "" }: ListingShareButtonProps) {
@@ -69,6 +71,7 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
   const [copyState, setCopyState] = useState<"idle" | "copied" | "manual">("idle");
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const manualLinkRef = useRef<HTMLInputElement>(null);
   const copyTimer = useRef<number | undefined>(undefined);
   const url = providerSlug ? `https://bubsbookings.com/providers/${encodeURIComponent(providerSlug)}` : canonicalListingUrl(slug ?? "");
   const text = description?.trim() || listingShareText(title);
@@ -89,7 +92,7 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
     document.body.style.overflow = "hidden";
     const dialog = dialogRef.current;
     const focusable = () => Array.from(dialog?.querySelectorAll<HTMLElement>('button, a[href], input:not([disabled])') ?? []);
-    focusable()[0]?.focus();
+    (manualLinkRef.current ?? focusable()[0])?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -112,16 +115,21 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
     };
   }, [open]);
 
+  useEffect(() => {
+    if (open && copyState === "manual") manualLinkRef.current?.focus();
+  }, [open, copyState]);
+
   async function copyLink() {
-    try {
-      const copied = await copyText(url);
-      setCopyState(copied ? "copied" : "manual");
-      if (copied) trackShare({ serviceId, providerSlug }, "copy_link");
-    } catch {
-      setCopyState("manual");
-    }
     window.clearTimeout(copyTimer.current);
-    copyTimer.current = window.setTimeout(() => setCopyState("idle"), 2400);
+    let copied = false;
+    try { copied = await copyText(url); } catch { /* Offer a manual copy instead. */ }
+    setCopyState(copied ? "copied" : "manual");
+    if (copied) {
+      trackShare({ serviceId, providerSlug }, "copy_link");
+      copyTimer.current = window.setTimeout(() => setCopyState("idle"), 2400);
+    } else {
+      setOpen(true);
+    }
   }
 
   async function activate() {
@@ -158,7 +166,7 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
 
         <button type="button" onClick={copyLink} className="listing-share-copy mt-5 flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#eee25a] px-5 py-3 text-sm font-bold text-[#183126] transition hover:bg-[#f6ea69] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#6b8d77]/40"><span aria-hidden="true">⧉</span>{copyState === "copied" ? "Link copied ✓" : "Copy link"}</button>
         <p aria-live="polite" role="status" className="mt-2 min-h-5 text-center text-xs font-semibold text-[#5f7168]">{copyState === "copied" ? `The canonical ${providerSlug ? "provider" : "listing"} link is ready to paste.` : copyState === "manual" ? "Copy was unavailable. Select the link below." : ""}</p>
-        {copyState === "manual" && <input readOnly value={url} onFocus={(event) => event.currentTarget.select()} aria-label={`${providerSlug ? "Provider" : "Listing"} link`} className="listing-share-url mt-1 w-full rounded-xl border border-[#183126]/15 bg-white px-3 py-3 text-sm" />}
+        {copyState === "manual" && <input ref={manualLinkRef} readOnly value={url} onFocus={(event) => event.currentTarget.select()} aria-label={`${providerSlug ? "Provider" : "Listing"} link`} className="listing-share-url mt-1 w-full rounded-xl border border-[#183126]/15 bg-white px-3 py-3 text-sm" />}
 
         <p className="mt-4 text-xs font-bold uppercase tracking-[.13em] text-[#718078]">Share with</p>
         <div className="mt-3 grid grid-cols-2 gap-2">
@@ -176,7 +184,7 @@ export default function ListingShareButton({ serviceId, slug, providerSlug, titl
   ) : null;
 
   return <>
-    <button ref={triggerRef} type="button" onClick={activate} aria-label={action === "share" ? `Share ${title}` : `Copy link for ${title}`} aria-haspopup={action === "share" ? "dialog" : undefined} aria-expanded={action === "share" ? open : undefined} className={`listing-share-trigger inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-[#183126]/15 bg-white px-4 py-2.5 text-sm font-bold text-[#183126] transition hover:border-[#597563] hover:bg-[#e5eddf] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#eee25a]/70 ${className}`}><UiIcon name={action === "share" ? "share" : "copy"} className="h-4 w-4" />{triggerLabel}</button>
+    <button ref={triggerRef} type="button" onClick={activate} aria-label={action === "share" ? `Share ${title}` : `Copy link for ${title}`} aria-haspopup="dialog" aria-expanded={open} className={`listing-share-trigger inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-[#183126]/15 bg-white px-4 py-2.5 text-sm font-bold text-[#183126] transition hover:border-[#597563] hover:bg-[#e5eddf] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#eee25a]/70 ${className}`}><UiIcon name={action === "share" ? "share" : "copy"} className="h-4 w-4" />{triggerLabel}</button>
     <span className="sr-only" aria-live="polite">{action === "copy" && copyState === "copied" ? "Link copied" : ""}</span>
     {dialog}
   </>;

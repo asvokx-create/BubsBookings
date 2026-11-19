@@ -1,3 +1,6 @@
+export const MIN_LISTING_HOURLY_RATE_CENTS = 50;
+export const MAX_HOURLY_RATE_CENTS = 10_000_000;
+
 export const PRICING_TYPES = ["FIXED", "HOURLY", "QUOTE_ONLY"] as const;
 export type PricingType = (typeof PRICING_TYPES)[number];
 export const HOURLY_BILLING_INCREMENTS = [15, 30, 60] as const;
@@ -41,6 +44,16 @@ export function isHourlyBillingIncrement(value: unknown): value is 15 | 30 | 60 
   return typeof value === "number" && HOURLY_BILLING_INCREMENTS.includes(value as 15 | 30 | 60);
 }
 
+/** Write-time limits for new or edited listings; historical reads keep their original terms. */
+export function validateListingHourlyPricing(config: HourlyPricingConfig) {
+  if (!isSupportedListingHourlyRate(config.hourlyRateCents)) throw new RangeError("Enter an hourly rate between $0.50 and $100,000.");
+  return validateHourlyPricing(config);
+}
+
+export function isSupportedListingHourlyRate(rateCents: number) {
+  return Number.isSafeInteger(rateCents) && rateCents >= MIN_LISTING_HOURLY_RATE_CENTS && rateCents <= MAX_HOURLY_RATE_CENTS;
+}
+
 export function validateHourlyPricing(config: HourlyPricingConfig) {
   requireSafeInteger(config.hourlyRateCents, "Hourly rate", 50);
   requireSafeInteger(config.minimumDurationMinutes, "Minimum duration", 15);
@@ -77,7 +90,7 @@ export function calculateHourlyBasePriceCents(hourlyRateCents: number, durationM
 
 /** Draft form values are incomplete while typing; never throw from a render preview. */
 export function previewHourlyBasePriceCents(hourlyRateCents: number, durationMinutes: number): number | null {
-  if (!Number.isSafeInteger(hourlyRateCents) || hourlyRateCents < 50 || hourlyRateCents > 100_000_000
+  if (!isSupportedListingHourlyRate(hourlyRateCents)
     || !Number.isSafeInteger(durationMinutes) || durationMinutes <= 0) return null;
   try {
     return calculateHourlyBasePriceCents(hourlyRateCents, durationMinutes);
