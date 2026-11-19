@@ -87,3 +87,19 @@ test("admin authorization remains enforced by the server layout", () => {
   assert.match(layout, /await getAdminSession\(\)/);
   assert.match(layout, /if \(!session\) redirect\("\/login\?redirect=\/admin"\)/);
 });
+
+test("admin support actions use a labeled dialog and disclose customer-visible replies", () => {
+  const support = read("components", "admin-support-queue.tsx");
+  assert.doesNotMatch(support, /window\.prompt/);
+  assert.match(support, /<dialog/);
+  assert.match(support, /dialog\.showModal\(\)/);
+  assert.match(support, /onCancel=/);
+  assert.match(support, /aria-labelledby=/);
+  assert.match(support, /aria-describedby=/);
+  assert.match(support, /<textarea/);
+  assert.match(support, /maxLength=\{1000\}/);
+  assert.match(support, /The requester will see any message you enter/);
+  assert.match(support, /Send reply and resolve/);
+  assert.match(support, /savingRef\.current/);
+  assert.match(support, /role="alert"/);
+});
