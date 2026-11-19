@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { missingBookingRequestDetails } from "@/lib/booking-request-details";
 import HourlyProjectRequest from "@/components/hourly-project-request";
@@ -81,6 +81,19 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
   const [timeSlots, setTimeSlots] = useState<string[]>([]);
   const [providerTimeZone, setProviderTimeZone] = useState("");
   const [step, setStep] = useState<"details" | "times" | "confirmed">("details");
+  const resultsTitle = useRef<HTMLLegendElement>(null);
+  const confirmationTitle = useRef<HTMLHeadingElement>(null);
+  const resultsCountId = useId();
+  const focusResults = useRef(false);
+  useEffect(() => {
+    if (step === "confirmed") {
+      confirmationTitle.current?.focus();
+      return;
+    }
+    if (step !== "times" || !focusResults.current) return;
+    focusResults.current = false;
+    resultsTitle.current?.focus();
+  }, [step]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [requiresLogin, setRequiresLogin] = useState(false);
@@ -132,6 +145,8 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
 
   async function checkAvailability(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
+    const focusBeforeRequest = document.activeElement;
     if (bookingDisabled) {
       setError("");
       setShowFullyBooked(true);
@@ -156,6 +171,8 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
       setError(data?.error ?? "We could not check availability. Please try again.");
       return;
     }
+    const activeElement = document.activeElement;
+    focusResults.current = activeElement === document.body || (activeElement === focusBeforeRequest && form.contains(activeElement));
     setTimeSlots(data.times ?? []);
     setProviderTimeZone(data.timeZone ?? "");
     setStep("times");
@@ -200,7 +217,7 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
       <div className="rounded-[2rem] border border-[#183126]/10 bg-white p-7 text-center shadow-[0_20px_50px_rgba(24,49,38,.12)]">
         <span className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-[#e5f1e7] text-3xl text-[#33704a]">✓</span>
         <p className="mt-6 text-xs font-bold uppercase tracking-[.16em] text-[#6a7c72]">Request sent</p>
-        <h2 className="mt-2 text-2xl font-bold tracking-tight">Your request is on its way to {provider}.</h2>
+        <h2 ref={confirmationTitle} tabIndex={-1} className="mt-2 text-2xl font-bold tracking-tight">Your request is on its way to {provider}.</h2>
         <p className="mt-3 text-sm leading-6 text-[#6c7b74]">We&apos;ve requested {date} at {formatTime(time)}. You&apos;ll receive a confirmation before anything is charged.</p>
         <div className="mt-6 rounded-2xl bg-[#f7f6f1] p-4 text-left">
           <p className="text-xs font-bold uppercase tracking-wider text-[#78867f]">Booking summary</p>
@@ -253,16 +270,18 @@ function ScheduledBookingCard({ serviceId, price, duration, pricingType, hourlyR
 
         {step === "times" && (
           <fieldset className="pt-2">
-            <legend className="mb-3 text-xs font-bold uppercase tracking-wider text-[#708078]">Available times{providerTimeZone ? ` · ${providerTimeZone}` : ""}</legend>
+            <legend ref={resultsTitle} tabIndex={-1} aria-describedby={resultsCountId} className="mb-3 text-xs font-bold uppercase tracking-wider text-[#52665b]">Available times{providerTimeZone ? ` · ${providerTimeZone}` : ""}</legend>
+            <p id={resultsCountId} className="sr-only">{timeSlots.length === 0 ? "No times are available on this date." : timeSlots.length === 1 ? "One available time." : timeSlots.length + " available times."}</p>
             <div className="grid grid-cols-2 gap-2">
               {timeSlots.map((slot) => (
-                <button key={slot} type="button" onClick={() => { setTime(slot); setError(""); }} className={`rounded-xl border px-3 py-3 text-sm font-semibold transition ${time === slot ? "border-[#183126] bg-[#183126] text-white" : "border-[#183126]/15 bg-white hover:border-[#8f8421] hover:bg-[#fff7ad]"}`}>{formatTime(slot)}</button>
+                <button key={slot} type="button" aria-pressed={time === slot} onClick={() => { setTime(slot); setError(""); }} className={`rounded-xl border px-3 py-3 text-sm font-semibold transition ${time === slot ? "border-[#183126] bg-[#183126] text-white" : "border-[#183126]/15 bg-white hover:border-[#8f8421] hover:bg-[#fff7ad]"}`}>{formatTime(slot)}</button>
               ))}
             </div>
             {timeSlots.length === 0 && <div className="rounded-xl bg-[#f5f5ef] p-4 text-center text-sm text-[#708078]"><p>No times are available on this date.</p><Link href={requestAnotherTimeHref} className="mt-3 inline-flex rounded-full bg-[#183126] px-4 py-2 text-xs font-bold text-white">Request another time</Link></div>}
           </fieldset>
         )}
 
+        <p role="status" className="sr-only">{loading ? (step === "details" ? "Checking availability." : "Sending your request.") : ""}</p>
         {error && <div role="alert" className="rounded-xl bg-[#fff1e8] px-3 py-2.5 text-xs font-semibold text-[#9a4e25]">{error}{requiresLogin && <Link href={`/login?redirect=${encodeURIComponent(returnPath)}`} className="ml-1 underline">Log in here.</Link>}</div>}
 
         {step === "details" ? (

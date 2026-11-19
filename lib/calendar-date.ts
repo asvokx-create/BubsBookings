@@ -53,3 +53,18 @@ export function formatDateOnly(value: string, locale = "en-US") {
   return new Intl.DateTimeFormat(locale, { month: "long", day: "numeric", year: "numeric" })
     .format(new Date(parsed.year, parsed.month - 1, parsed.day, 12));
 }
+
+/** Keep the initial keyboard target inside the supplied date-only bounds. */
+export function clampDateOnly(value: string, min?: string, max?: string) {
+  if (min && value < min) return min;
+  if (max && value > max) return max;
+  return value;
+}
+
+/** Preserve day of month when paging, clamping short months (including leap years). */
+export function shiftDateOnlyMonths(value: string, amount: number) {
+  const parsed = parseDateOnly(value);
+  if (!parsed) return value;
+  const shifted = shiftCalendarMonth(parsed, amount);
+  return toDateOnly(shifted.year, shifted.month, Math.min(parsed.day, daysInMonth(shifted.year, shifted.month)));
+}

@@ -4469,3 +4469,12 @@ html[data-theme="dark"] .home-service-favorite {
     transition-duration: .01ms !important;
   }
 }
+
+/* Keep keyboard focus visible on provider onboarding radio cards. */
+.provider-onboarding label:has(input[type="radio"]:focus-visible) {
+  outline: 3px solid #315846;
+  outline-offset: 3px;
+}
+html[data-theme="dark"] .provider-onboarding label:has(input[type="radio"]:focus-visible) {
+  outline-color: #eee25a;
+}
