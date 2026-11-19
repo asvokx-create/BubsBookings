@@ -7,10 +7,13 @@ import { missingBookingRequestDetails, type BookingRequestDetails } from "../lib
 const valid: BookingRequestDetails = { deliveryMethod: "IN_PERSON", addressLine1: "1 Test St", city: "Test", state: "CA", postalCode: "90001", date: "2026-12-01", time: "10:00", quoteOnly: false, notes: "", bookingQuestions: [], answers: {} };
 const source = readFileSync(new URL("../app/services/[slug]/booking-card.tsx", import.meta.url), "utf8");
 const availability = source.slice(source.indexOf("  async function checkAvailability("), source.indexOf("  async function confirmRequest("));
-const request = source.slice(source.indexOf("  async function confirmRequest("), source.indexOf('  if (step === "confirmed")'));
+const requestStart = source.indexOf("  async function confirmRequest(");
+const request = source.slice(requestStart, source.indexOf('\n  if (step === "confirmed")', requestStart));
+const formEvent = { currentTarget: { contains: () => true }, preventDefault() {} };
 function harness(overrides: Record<string, unknown> = {}) {
   const calls: string[] = [], errors: string[] = [], steps: string[] = [];
-  const context = vm.createContext({ ...valid, addressLine2: "", accessInstructions: "", parentBookingId: "", packageId: "", addOnQuantities: {}, recurrence: "one_time", couponCode: "", bookingDisabled: false, serviceId: "test", hourlyConfig: null, additionalDurationMinutes: 0,
+  const body = {};
+  const context = vm.createContext({ document: { body, activeElement: body }, focusResults: { current: false }, ...valid, addressLine2: "", accessInstructions: "", parentBookingId: "", packageId: "", addOnQuantities: {}, recurrence: "one_time", couponCode: "", bookingDisabled: false, serviceId: "test", hourlyConfig: null, additionalDurationMinutes: 0,
     missingBookingRequestDetails, setError: (s: string) => errors.push(s), setShowFullyBooked: () => {}, setLoading: () => {}, setRequiresLogin: () => {}, setTime: () => {}, setTimeSlots: () => {}, setProviderTimeZone: () => {}, setConfirmedPricing: () => {}, setStep: (s: string) => steps.push(s),
     fetch: async (url: string) => { calls.push(url); return { ok: true }; }, responseJson: async () => ({ times: ["10:00"], timeZone: "America/Los_Angeles" }), ...overrides });
   vm.runInContext(ts.transpile(availability + request, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }), context);
@@ -27,7 +30,8 @@ test("remote request needs no postal address; changing to in-person does", () =>
 test("valid trimmed address and ZIP+4 pass", () => assert.deepEqual(missingBookingRequestDetails({ ...valid, state: " ca ", postalCode: "90001-1234" }), []));
 test("actual availability handler fetches without address, question answers or quote description", async () => {
   const h = harness({ addressLine1: "", postalCode: "", bookingQuestions: ["Required question"], quoteOnly: true });
-  await h.context.checkAvailability({ preventDefault() {} });
+  await h.context.checkAvailability(formEvent);
+  assert.equal(h.context.focusResults.current, true);
   assert.equal(h.calls.length, 1); assert.match(h.calls[0], /availability\?date=/); assert.equal(h.steps[0], "times");
   assert.match(source, /<form noValidate onSubmit=\{checkAvailability\}/);
 });
@@ -43,7 +47,7 @@ test("corrected in-person request and remote request can proceed", async () => {
 });
 test("availability keeps required scheduling inputs; request missing time is blocked", async () => {
   for (const overrides of [{ date: "" }, { deliveryMethod: "" }]) {
-    const h = harness(overrides); await h.context.checkAvailability({ preventDefault() {} }); assert.equal(h.calls.length, 0);
+    const h = harness(overrides); await h.context.checkAvailability(formEvent); assert.equal(h.calls.length, 0);
   }
   const h = harness({ time: "" }); await h.context.confirmRequest(); assert.equal(h.calls.length, 0);
 });

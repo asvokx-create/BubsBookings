@@ -36,6 +36,7 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
   const [signupStep, setSignupStep] = useState<1 | 2 | 3>(1);
   const [signupMethod, setSignupMethod] = useState<"email" | SocialProvider>("email");
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
+  const previousSignupStepRef = useRef(signupStep);
   const isLogin = mode === "login";
   const isProviderIntent = redirectTo === "/providers/join" || redirectTo.startsWith("/providers/join?") || redirectTo.startsWith("/provider/");
   const hasRequiredConsents = acceptedTerms && acknowledgedPrivacy;
@@ -50,6 +51,12 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
   useEffect(() => {
     if (mode === "signup" && isProviderIntent) recordProviderSignupStarted();
   }, [isProviderIntent, mode]);
+
+  useEffect(() => {
+    if (previousSignupStepRef.current === signupStep) return;
+    previousSignupStepRef.current = signupStep;
+    if (!isLogin) stepHeadingRef.current?.focus();
+  }, [isLogin, signupStep]);
 
   async function confirmAgeEligibility() {
     if (!dateOfBirth) {
@@ -99,7 +106,6 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
   async function showSignupStepTwo() {
     if (!await confirmAgeEligibility()) return;
     setSignupStep(2);
-    requestAnimationFrame(() => stepHeadingRef.current?.focus());
   }
 
   function showSignupStepThree(method: "email" | SocialProvider) {
@@ -114,7 +120,6 @@ export default function AuthForm({ mode, redirectTo = "/account", socialProvider
     setError("");
     setSignupMethod(method);
     setSignupStep(3);
-    requestAnimationFrame(() => stepHeadingRef.current?.focus());
   }
 
   function showSignupStepOne() {

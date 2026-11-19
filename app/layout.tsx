@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import SkipToContent from "@/components/skip-to-content";
 import SiteFooter from "@/components/site-footer";
 import AnalyticsTracker from "@/components/analytics-tracker";
 import GoogleAnalytics from "@/components/google-analytics";
@@ -59,7 +60,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       style={localFontVariable}
     >
       <body className="min-h-full flex flex-col">
-        <a href="#site-content" className="skip-link">Skip to main content</a>
+        <SkipToContent />
         <Script id="bubsbookings-theme" strategy="beforeInteractive">{`try{const p=localStorage.getItem("bubsbookings-theme")||"light";const t=p==="system"?(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"):p;document.documentElement.dataset.theme=t;document.documentElement.style.colorScheme=t}catch{}`}</Script>
         <Script id="privatus-analytics" src="https://privatusanalytics.com/js/pa.js" data-site="pa_QBY99J7UCK" data-modules="engage,auto,vitals,clicks,ask" strategy="beforeInteractive" defer />
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd).replace(/</g, "\\u003c") }} />

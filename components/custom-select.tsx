@@ -50,6 +50,7 @@ type CustomSelectProps = {
   className?: string;
   buttonClassName?: string;
   menuClassName?: string;
+  getPortalContainer?: () => HTMLElement | null;
   renderValue?: (option: CustomSelectOption) => ReactNode;
 };
 
@@ -105,6 +106,7 @@ export default function CustomSelect({
   className = "",
   buttonClassName = "",
   menuClassName = "",
+  getPortalContainer,
   renderValue,
 }: CustomSelectProps) {
   const childOptions = useMemo(() => optionsFromChildren(children), [children]);
@@ -202,6 +204,7 @@ export default function CustomSelect({
     const form = buttonRef.current?.closest("form");
     if (!form) return;
     function validate(event: SubmitEvent) {
+      if (event.defaultPrevented) return;
       if (!required || valueRef.current) return;
       event.preventDefault();
       event.stopPropagation();
@@ -305,7 +308,7 @@ export default function CustomSelect({
 
   const menu = open ? createPortal(
     <div ref={menuRef} className={`custom-select-menu fixed overflow-hidden rounded-2xl border border-[#183126]/12 bg-white p-1.5 shadow-[0_18px_45px_rgba(24,49,38,.2)] ${menuClassName}`} style={menuStyle}>
-      {searchable && <div className="border-b border-[#183126]/10 p-1.5 pb-2"><input ref={searchRef} type="search" value={query} onChange={(event) => { const nextQuery = event.target.value; setQuery(nextQuery); setActiveIndex(edgeEnabledIndex(filterSelectOptions(resolvedOptions, nextQuery))); }} onKeyDown={handleNavigation} aria-label={`Search ${ariaLabel.toLocaleLowerCase()} options`} placeholder="Search options…" className="custom-select-search min-h-11 w-full rounded-xl border border-[#183126]/12 bg-[#fafaf6] px-3 text-sm outline-none focus:border-[#4d725d] focus:ring-2 focus:ring-[#4d725d]/15" /></div>}
+      {searchable && <div className="border-b border-[#183126]/10 p-1.5 pb-2"><input ref={searchRef} type="search" role="combobox" aria-autocomplete="list" aria-expanded={open} aria-controls={listboxId} aria-activedescendant={activeOptionId} value={query} onChange={(event) => { const nextQuery = event.target.value; setQuery(nextQuery); setActiveIndex(edgeEnabledIndex(filterSelectOptions(resolvedOptions, nextQuery))); }} onKeyDown={handleNavigation} aria-label={`Search ${ariaLabel.toLocaleLowerCase()} options`} placeholder="Search options…" className="custom-select-search min-h-11 w-full rounded-xl border border-[#183126]/12 bg-[#fafaf6] px-3 text-sm outline-none focus:border-[#4d725d] focus:ring-2 focus:ring-[#4d725d]/15" /></div>}
       <div id={listboxId} role="listbox" aria-label={ariaLabel} aria-busy={loading || undefined} className="custom-select-options overscroll-contain overflow-y-auto py-0.5" style={{ maxHeight: position.maxHeight }}>
         {loading ? <p className="px-3 py-6 text-center text-sm text-[#718078]">Loading options…</p> : filteredOptions.length ? filteredOptions.map((option, index) => {
           const previousGroup = index > 0 ? filteredOptions[index - 1]?.group : undefined;
@@ -317,13 +320,13 @@ export default function CustomSelect({
         }) : <p className="px-3 py-6 text-center text-sm text-[#718078]">No matching options</p>}
       </div>
     </div>,
-    document.body,
+    getPortalContainer?.() ?? document.body,
   ) : null;
 
   return <div ref={rootRef} className={`custom-select relative min-w-0 ${className}`}>
     {name && <input type="hidden" name={name} value={currentValue} />}
     <div className="relative flex min-w-0 items-center">
-      <button ref={buttonRef} type="button" role="combobox" disabled={disabled} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-controls={listboxId} aria-activedescendant={activeOptionId} aria-required={required || undefined} aria-invalid={Boolean(error || invalid) || undefined} aria-describedby={describedBy} onClick={() => { if (open) closeMenu(false); else openMenu(); }} onKeyDown={handleNavigation} className={`custom-select-trigger flex min-h-12 w-full min-w-0 items-center justify-between gap-2 rounded-xl border border-[#183126]/15 bg-[#faf9f5] px-4 py-3 text-left text-sm outline-none transition hover:border-[#4d725d] hover:bg-white focus-visible:border-[#4d725d] disabled:cursor-not-allowed disabled:opacity-55 ${error || invalid ? "border-[#a85543] ring-2 ring-[#a85543]/15" : ""} ${buttonClassName}`}>
+      <button ref={buttonRef} type="button" role="combobox" disabled={disabled} aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-controls={listboxId} aria-activedescendant={searchable ? undefined : activeOptionId} aria-required={required || undefined} aria-invalid={Boolean(error || invalid) || undefined} aria-describedby={describedBy} onClick={() => { if (open) closeMenu(false); else openMenu(); }} onKeyDown={handleNavigation} className={`custom-select-trigger flex min-h-12 w-full min-w-0 items-center justify-between gap-2 rounded-xl border border-[#183126]/15 bg-[#faf9f5] px-4 py-3 text-left text-sm outline-none transition hover:border-[#4d725d] hover:bg-white focus-visible:border-[#4d725d] disabled:cursor-not-allowed disabled:opacity-55 ${error || invalid ? "border-[#a85543] ring-2 ring-[#a85543]/15" : ""} ${buttonClassName}`}>
         <span className={`min-w-0 flex-1 truncate ${selected ? "" : "text-[#718078]"}`}>{selected ? (renderValue ? renderValue(selected) : selected.label) : placeholder}</span>
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className={`h-4 w-4 shrink-0 transition-transform duration-150 ${open ? "rotate-180" : ""}`}><path strokeLinecap="round" strokeLinejoin="round" d="m6 8 4 4 4-4" /></svg>
       </button>
