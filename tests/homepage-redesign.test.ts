@@ -55,7 +55,7 @@ test("homepage has the focused seven-section structure and truthful provider pro
     assert.match(home, new RegExp(`className="${className}(?: |")`));
   }
   assert.match(home, /without paying for leads/);
-  assert.match(showcase, /Illustrative preview/);
+  assert.match(showcase, /Provider dashboard preview\. Sample empty account/);
   assert.doesNotMatch(home, /home-benefit-band|home-why|home-final-links|What people are saying/);
 });
 
