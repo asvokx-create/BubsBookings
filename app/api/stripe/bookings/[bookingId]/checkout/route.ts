@@ -26,7 +26,7 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
     payment_status: string; quote_status: string; plan: ProviderPlan; stripe_account_id: string | null;
     age_verification_status: "not_started" | "pending" | "requires_input" | "verified" | "failed";
     stripe_connect_mode: "test" | "live" | null; stripe_mode: "test" | "live" | null;
-    stripe_checkout_session_id: string | null; payment_flow: string | null;
+    stripe_checkout_session_id: string | null; stripe_payment_intent_id: string | null; payment_flow: string | null;
     provider_plan_snapshot: BookingFinancialPlan | null; provider_fee_basis_points: number | null; provider_fee_cap_cents: number | null;
     platform_fee_cents: number; provider_payout_cents: number; customer_service_fee_cents: number;
     customer_total_cents: number | null;
@@ -34,7 +34,7 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
     pricing_type_snapshot: "FIXED" | "HOURLY" | "QUOTE_ONLY"; hourly_rate_cents_snapshot: number | null; billable_duration_minutes: number;
   }>(`SELECT b.id::text, s.title, s.business_name AS provider_name, b.price_cents, b.status,
       b.payment_status, b.quote_status, p.plan, p.stripe_account_id, p.age_verification_status, p.stripe_connect_mode, b.stripe_mode,
-      b.stripe_checkout_session_id, b.payment_flow, b.provider_plan_snapshot, b.provider_fee_basis_points, b.provider_fee_cap_cents,
+      b.stripe_checkout_session_id, b.stripe_payment_intent_id, b.payment_flow, b.provider_plan_snapshot, b.provider_fee_basis_points, b.provider_fee_cap_cents,
       b.platform_fee_cents, b.provider_payout_cents, b.customer_service_fee_cents, b.customer_total_cents,
       b.base_price_cents,b.add_on_total_cents,b.discount_cents,b.package_snapshot,b.coupon_code_snapshot,
       b.pricing_type_snapshot,b.hourly_rate_cents_snapshot,b.billable_duration_minutes
@@ -46,7 +46,12 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
   if (booking.status !== "confirmed" && booking.status !== "completed") return NextResponse.json({ error: "The provider must confirm this booking before payment." }, { status: 409 });
   if (booking.quote_status === "pending" || booking.quote_status === "declined") return NextResponse.json({ error: "Resolve the custom quote before payment." }, { status: 409 });
   const mode = getStripeMode();
-  if (booking.stripe_mode === mode && booking.payment_status === "paid") return NextResponse.json({ error: "This booking is already paid." }, { status: 409 });
+  if (!["unpaid", "pending", "failed"].includes(booking.payment_status)) {
+    return NextResponse.json({ error: booking.payment_status === "paid" ? "This booking is already paid." : "This booking cannot accept a new payment." }, { status: 409 });
+  }
+  if (booking.stripe_mode !== mode && (booking.stripe_mode || booking.stripe_checkout_session_id)) {
+    return NextResponse.json({ error: "This payment belongs to a different Stripe environment. Contact support." }, { status: 409 });
+  }
   if (booking.age_verification_status !== "verified") return NextResponse.json({ error: "This provider is still completing required eligibility verification." }, { status: 409 });
   if (!booking.stripe_account_id || booking.stripe_connect_mode !== mode) return NextResponse.json({ error: "This provider has not finished payout setup yet." }, { status: 409 });
   if (booking.price_cents < 50) return NextResponse.json({ error: "This booking total is too low for online payment." }, { status: 409 });
@@ -63,15 +68,37 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
   } : freshSnapshot;
 
   const stripe = getStripe();
-  if (booking.stripe_mode === mode && booking.payment_status === "pending" && booking.stripe_checkout_session_id) {
-    const existing = await stripe.checkout.sessions.retrieve(booking.stripe_checkout_session_id);
-    if (existing.status === "open" && existing.url
+  if (booking.stripe_checkout_session_id) {
+    // Stripe can finish checkout before the settlement webhook updates this booking.
+    // Only a definitively closed attempt with no payment can be replaced.
+    const existing = await stripe.checkout.sessions.retrieve(booking.stripe_checkout_session_id, { expand: ["payment_intent"] }).catch(() => null);
+    if (!existing || existing.id !== booking.stripe_checkout_session_id || existing.livemode !== (mode === "live")) {
+      return NextResponse.json({ error: "We could not verify your previous checkout. Please try again later or contact support." }, { status: 503 });
+    }
+    if (existing.status === "open" && existing.payment_status === "unpaid" && existing.url
       && existing.metadata?.paymentFlow === "held_transfer_v1"
       && existing.metadata?.checkoutVersion === BOOKING_CHECKOUT_VERSION
       && existing.metadata?.customerServiceFeeCents === String(snapshot.customerServiceFeeCents)) {
       return NextResponse.json({ url: existing.url });
     }
-    if (existing.status === "open") await stripe.checkout.sessions.expire(existing.id).catch(() => undefined);
+    const intent = existing.payment_intent;
+    const canceledWithoutPayment = booking.payment_status === "failed"
+      && existing.status === "complete" && existing.payment_status === "unpaid"
+      && existing.metadata?.kind === "booking_payment" && existing.metadata?.bookingId === booking.id
+      && intent && typeof intent !== "string"
+      && (!booking.stripe_payment_intent_id || booking.stripe_payment_intent_id === intent.id)
+      && intent.status === "canceled" && intent.amount_received === 0
+      && intent.livemode === (mode === "live")
+      && intent.metadata?.kind === "booking_payment" && intent.metadata?.bookingId === booking.id;
+    const expiredWithoutPayment = existing.status === "expired" && existing.payment_status === "unpaid";
+    if (!expiredWithoutPayment && !canceledWithoutPayment) {
+      const failedUnresolved = booking.payment_status === "failed" && existing.status === "complete" && existing.payment_status === "unpaid";
+      return NextResponse.json({ error: failedUnresolved
+        ? "Your previous payment did not complete. Contact support before trying again."
+        : existing.status === "complete" || existing.payment_status === "paid"
+          ? "We’re confirming your previous payment. Please do not pay again."
+          : "Your previous checkout is still active. Wait for it to expire before starting a new one." }, { status: 409 });
+    }
   }
   const account = await stripe.accounts.retrieve(booking.stripe_account_id);
   await database.query("UPDATE provider_profiles SET stripe_charges_enabled = $2, stripe_payouts_enabled = $3 WHERE stripe_account_id = $1 AND stripe_connect_mode = $4", [booking.stripe_account_id, account.charges_enabled, account.payouts_enabled, mode]);
@@ -103,7 +130,7 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
     cancel_url: `${origin}/account/bookings/${booking.id}?payment=cancelled`,
     metadata: { kind: "booking_payment", bookingId: booking.id, paymentFlow: "held_transfer_v1", checkoutVersion: BOOKING_CHECKOUT_VERSION, customerServiceFeeCents: String(snapshot.customerServiceFeeCents), providerPlan: snapshot.providerPlan, providerFeeBasisPoints: String(snapshot.providerFeeBasisPoints), pricingType: booking.pricing_type_snapshot, billableDurationMinutes: String(booking.billable_duration_minutes) },
   }, { idempotencyKey: `booking-checkout-${mode}-${booking.id}-${checkoutAttemptKey}` });
-  await database.query(`UPDATE bookings SET stripe_checkout_session_id = $2, stripe_payment_intent_id = NULL,
+  const linked = await database.query(`UPDATE bookings SET stripe_checkout_session_id = $2, stripe_payment_intent_id = NULL,
     stripe_charge_id = NULL, stripe_transfer_id = NULL, stripe_mode = $3, payment_status = 'pending',
     payment_flow = 'held_transfer_v1', payment_release_status = 'awaiting_payment',
     platform_fee_cents = $4, provider_payout_cents = $5, customer_service_fee_cents = $6,
@@ -112,8 +139,18 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
     customer_service_fee_refunded_cents = 0, paid_at = NULL,
     completion_confirmation_due_at = NULL, customer_confirmed_at = NULL, payout_released_at = NULL,
     payout_failure_reason = NULL, payout_frozen_at = NULL, payout_frozen_by = NULL, payout_freeze_reason = NULL
-    WHERE id::text = $1`, [booking.id, checkout.id, mode, snapshot.providerFeeCents, snapshot.providerNetCents,
-      snapshot.customerServiceFeeCents, snapshot.providerPlan, snapshot.providerFeeBasisPoints, snapshot.providerFeeCapCents, snapshot.customerTotalCents]);
+    WHERE id::text = $1
+      AND stripe_checkout_session_id IS NOT DISTINCT FROM $11
+      AND stripe_mode IS NOT DISTINCT FROM $12
+      AND payment_status = $13
+      AND status = $14 AND quote_status = $15 AND price_cents = $16
+      AND stripe_payment_intent_id IS NOT DISTINCT FROM $17
+    RETURNING id`, [booking.id, checkout.id, mode, snapshot.providerFeeCents, snapshot.providerNetCents,
+      snapshot.customerServiceFeeCents, snapshot.providerPlan, snapshot.providerFeeBasisPoints, snapshot.providerFeeCapCents, snapshot.customerTotalCents,
+      booking.stripe_checkout_session_id, booking.stripe_mode, booking.payment_status, booking.status, booking.quote_status, booking.price_cents, booking.stripe_payment_intent_id]);
+  // PostgreSQL rechecks these predicates after waiting on a concurrent row update.
+  // Never expose an unlinked URL or reset state written by a settlement webhook.
+  if (!linked.rowCount) return NextResponse.json({ error: "The booking payment status changed. Refresh the booking before trying again." }, { status: 409 });
   await recordAnalytics({ eventName: "checkout_started", userId: session.user.id, targetType: "booking", targetId: booking.id, metadata: { serviceAmountCents: booking.price_cents, customerServiceFeeCents: snapshot.customerServiceFeeCents, amountCents: snapshot.customerTotalCents } });
   return NextResponse.json({ url: checkout.url });
 }
