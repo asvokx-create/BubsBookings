@@ -9,7 +9,7 @@ import { enforceRateLimit } from "@/lib/request-security";
 import { runAutomatedProviderVerification } from "@/lib/provider-verification";
 import { isServiceDeliveryType, type ServiceDeliveryType } from "@/lib/service-delivery";
 import { isRecurrenceOption, type RecurrenceOption } from "@/lib/service-commerce";
-import { isHourlyBillingIncrement, isPricingType, validateHourlyPricing, type PricingType } from "@/lib/service-pricing";
+import { isHourlyBillingIncrement, isPricingType, validateListingHourlyPricing, type PricingType } from "@/lib/service-pricing";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
 
 async function getSessionUserId() {
@@ -147,7 +147,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ se
   let hourlyValid = pricingType !== "HOURLY";
   if (pricingType === "HOURLY" && isHourlyBillingIncrement(billingIncrementMinutes)) {
     try {
-      validateHourlyPricing({ pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes });
+      validateListingHourlyPricing({ pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes });
       hourlyValid = true;
     } catch { hourlyValid = false; }
   }

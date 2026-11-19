@@ -17,7 +17,7 @@ import { recordAnalytics } from "@/lib/analytics";
 import { AFFILIATE_COOKIE, lockAffiliateAttribution, normalizeAffiliateCode } from "@/lib/affiliates";
 import { slugifyProviderName } from "@/lib/provider-profile-options";
 import { isServiceDeliveryType } from "@/lib/service-delivery";
-import { isHourlyBillingIncrement, isPricingType, validateHourlyPricing } from "@/lib/service-pricing";
+import { isHourlyBillingIncrement, isPricingType, validateListingHourlyPricing } from "@/lib/service-pricing";
 import { deliverProviderWelcomeEmail, enqueueProviderWelcomeEmail } from "@/lib/provider-welcome-email";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
 import { listingLimitExceeded, lockProviderListingLimit } from "@/lib/provider-listing-limits";
@@ -89,7 +89,7 @@ export async function POST(request: Request) {
 
   let hourlyValid = pricingType !== "HOURLY";
   if (pricingType === "HOURLY" && isHourlyBillingIncrement(billingIncrementMinutes)) {
-    try { validateHourlyPricing({ pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes }); hourlyValid = true; } catch { hourlyValid = false; }
+    try { validateListingHourlyPricing({ pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes }); hourlyValid = true; } catch { hourlyValid = false; }
   }
   const fixedPricingValid = pricingType !== "FIXED" || Number.isFinite(price) && price >= 0.5;
   const durationValid = Number.isInteger(durationMinutes) && durationMinutes >= 15 && durationMinutes <= 2_147_483_647;
