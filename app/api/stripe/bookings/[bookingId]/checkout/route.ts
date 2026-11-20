@@ -19,8 +19,6 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
   if (!await enforceRateLimit({ request, userId: session.user.id, bucket: "stripe-booking-checkout", limit: 8 }))
     return NextResponse.json({ error: "Too many payment attempts. Please wait and try again." }, { status: 429 });
   const { bookingId } = await context.params;
-  const project = await database.query<{ id: string }>("SELECT id::text FROM hourly_projects WHERE payment_booking_id::text=$1", [bookingId]);
-  if (project.rows[0]) return NextResponse.json({ error: "Review and pay the final timesheet from the project page.", projectId: project.rows[0].id }, { status: 409 });
   const result = await database.query<{
     id: string; title: string; provider_name: string; price_cents: number; status: string;
     payment_status: string; quote_status: string; plan: ProviderPlan; stripe_account_id: string | null;
@@ -42,6 +40,13 @@ export async function POST(request: Request, context: RouteContext<"/api/stripe/
     WHERE b.id::text = $1 AND b.customer_id = $2`, [bookingId, session.user.id]);
   const booking = result.rows[0];
   if (!booking) return NextResponse.json({ error: "Booking not found." }, { status: 404 });
+  const project = await database.query<{ id: string }>(
+    `SELECT h.id::text FROM hourly_projects h
+     JOIN bookings owner_booking ON owner_booking.id = h.payment_booking_id
+     WHERE owner_booking.id::text = $1 AND owner_booking.customer_id = $2`,
+    [booking.id, session.user.id],
+  );
+  if (project.rows[0]) return NextResponse.json({ error: "Review and pay the final timesheet from the project page.", projectId: project.rows[0].id }, { status: 409 });
   if (booking.pricing_type_snapshot === "QUOTE_ONLY") return NextResponse.json({ error: "Accept the provider's custom quote before checkout." }, { status: 409 });
   if (booking.status !== "confirmed" && booking.status !== "completed") return NextResponse.json({ error: "The provider must confirm this booking before payment." }, { status: 409 });
   if (booking.quote_status === "pending" || booking.quote_status === "declined") return NextResponse.json({ error: "Resolve the custom quote before payment." }, { status: 409 });

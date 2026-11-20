@@ -22,7 +22,12 @@ test("hourly approval persists one settlement and attempt before external paymen
 });
 test("settlements cannot bypass approval via ordinary booking checkout and events hold payouts", () => {
   const route = readFileSync(new URL("../app/api/stripe/bookings/[bookingId]/checkout/route.ts", import.meta.url),"utf8");
-  assert.match(route,/WHERE payment_booking_id::text=\$1/);
+  const ownerGuard = route.indexOf('if (!booking) return NextResponse.json({ error: "Booking not found." }');
+  const hourlyLinkLookup = route.indexOf("FROM hourly_projects h");
+  const hourlyRouting = route.indexOf("projectId: project.rows[0].id");
+  assert.ok(ownerGuard >= 0 && ownerGuard < hourlyLinkLookup && hourlyLinkLookup < hourlyRouting);
+  assert.match(route, /JOIN bookings owner_booking ON owner_booking\.id = h\.payment_booking_id\s+WHERE owner_booking\.id::text = \$1 AND owner_booking\.customer_id = \$2`/);
+  assert.match(route, /\[booking\.id, session\.user\.id\]/);
   const webhook = readFileSync(new URL("../app/api/stripe/webhook/route.ts", import.meta.url),"utf8");
   assert.match(webhook,/checkout.payment_status !== "paid"/);
   assert.match(webhook,/project.stripe_checkout_session_id !== checkout.id/);
