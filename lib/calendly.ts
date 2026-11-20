@@ -4,6 +4,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import type { PoolClient } from "pg";
 import { database } from "@/lib/database";
 import { CALENDLY_API_ORIGIN, CALENDLY_OAUTH_SCOPES, calendlyApiUrl, calendlyScheduledEventStatus, calendlyWebhookOwnerUris } from "@/lib/calendly-api";
+import { hasCalendlyEventTypeReadScope } from "@/lib/calendly-event-availability";
+import { CalendlyCallTransportError, type CalendlyCallIdentity } from "@/lib/calendly-call-api";
+import { enforceRateLimit } from "@/lib/request-security";
 import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
 
 const AUTH_ORIGIN = "https://auth.calendly.com";
@@ -19,6 +22,7 @@ type TokenResponse = {
 };
 
 type ConnectionRow = {
+  connected_at: string;
   id: string;
   provider_id: string;
   access_token_encrypted: string;
@@ -213,7 +217,7 @@ async function connectionToken(connectionId: string) {
     await client.query("BEGIN");
     const result = await client.query<ConnectionRow>(
       `SELECT id::text,provider_id::text,access_token_encrypted,refresh_token_encrypted,token_expires_at,
-               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri
+               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri,connected_at::text
        FROM provider_calendly_connections WHERE id::text=$1 AND disconnected_at IS NULL FOR UPDATE`, [connectionId],
     );
     const connection = result.rows[0];
@@ -230,7 +234,7 @@ async function connectionToken(connectionId: string) {
       [connectionId, encryptCalendlySecret(refreshed.access_token), encryptCalendlySecret(refreshed.refresh_token), expiresAt, refreshed.scope ?? connection.granted_scope],
     );
     await client.query("COMMIT");
-    return { connection: { ...connection, token_expires_at: expiresAt }, token: refreshed.access_token };
+    return { connection: { ...connection, token_expires_at: expiresAt, granted_scope: refreshed.scope ?? connection.granted_scope }, token: refreshed.access_token };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     throw error;
@@ -376,7 +380,7 @@ export async function processCalendlyWebhook(rawBody: string) {
     if (!eventUri || !membershipUsers.length) throw new Error("Calendly webhook did not identify an event owner.");
     const connectionResult = await database.query<ConnectionRow>(
       `SELECT id::text,provider_id::text,access_token_encrypted,refresh_token_encrypted,token_expires_at,
-               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri
+               calendly_user_uri,calendly_organization_uri,account_timezone,granted_scope,webhook_subscription_uri,connected_at::text
        FROM provider_calendly_connections WHERE calendly_user_uri=ANY($1::text[]) AND disconnected_at IS NULL`, [membershipUsers],
     );
     if (!connectionResult.rows.length) {
@@ -427,4 +431,63 @@ export async function disconnectCalendly(connectionId: string) {
     `UPDATE provider_calendly_connections SET disconnected_at=now(),access_token_encrypted='',refresh_token_encrypted='',
        webhook_subscription_uri=NULL,webhook_status='not_configured',webhook_error=NULL,updated_at=now() WHERE id::text=$1`, [connectionId],
   );
+}
+
+/** Read-only endpoints for the opt-in preview; never expands the OAuth grant. */
+export async function calendlyPreviewRead<T>(connectionId: string, expectedOwnerUri: string, path: string, request: Request): Promise<T> {
+  const url = calendlyApiUrl(path);
+  if (url.username || url.password || url.hash || !(/^\/event_types(?:\/[A-Za-z0-9_-]+)?$/.test(url.pathname) || url.pathname === "/event_type_available_times")) {
+    throw new Error("Unsupported Calendly preview endpoint.");
+  }
+  // Check the grant before refresh so a missing permission does not initiate authentication work.
+  const current = await database.query<{ granted_scope: string; calendly_user_uri: string }>(
+    "SELECT granted_scope,calendly_user_uri FROM provider_calendly_connections WHERE id::text=$1 AND disconnected_at IS NULL", [connectionId]);
+  if (current.rows[0]?.calendly_user_uri !== expectedOwnerUri || !hasCalendlyEventTypeReadScope(current.rows[0]?.granted_scope ?? "")) {
+    throw new Error("Calendly event-type read access is not available. No additional permission was requested.");
+  }
+  if (!await enforceRateLimit({ request, userId: expectedOwnerUri, bucket: "calendly_preview_upstream", limit: 20, windowSeconds: 60 })) {
+    throw new Error("Calendly preview is busy. Please try again in a minute.");
+  }
+  const { connection, token } = await connectionToken(connectionId);
+  if (connection.calendly_user_uri !== expectedOwnerUri || !hasCalendlyEventTypeReadScope(connection.granted_scope)) {
+    throw new Error("Calendly connection changed. Select the event again after account setup is complete.");
+  }
+  return apiRequest<T>(token, url.toString(), { method: "GET", redirect: "error" });
+}
+
+/** Guarded one-dispatch transport. No OAuth grant expansion and no mutation retries. */
+export async function calendlyCallRequest<T>(
+  binding: Pick<CalendlyCallIdentity, "connectionId" | "providerId" | "ownerUri" | "connectedAt">,
+  method: "GET" | "POST", path: string, body?: unknown, request = new Request("http://localhost/internal/calendly-calls"),
+): Promise<T> {
+  const url = calendlyApiUrl(path);
+  const recoveryReadOrCancel = method === "GET" || /^\/scheduled_events\/[A-Za-z0-9_-]+\/cancellation$/.test(url.pathname);
+  if (process.env.CALENDLY_CALL_BOOKINGS_ENABLED !== "true" && !(process.env.CALENDLY_CALL_RECOVERY_ENABLED === "true" && recoveryReadOrCancel)) throw new CalendlyCallTransportError(false);
+  const readAllowed = /^\/event_types\/[A-Za-z0-9_-]+$/.test(url.pathname) || url.pathname === "/event_type_available_times"
+    || /^\/scheduled_events(?:\/[A-Za-z0-9_-]+(?:\/invitees(?:\/[A-Za-z0-9_-]+)?)?)?$/.test(url.pathname);
+  const writeAllowed = url.pathname === "/invitees" || /^\/scheduled_events\/[A-Za-z0-9_-]+\/cancellation$/.test(url.pathname);
+  if (url.username || url.password || url.hash || (method === "GET" ? !readAllowed : !writeAllowed || Boolean(url.search))
+    || (url.pathname === "/scheduled_events" && url.searchParams.get("user") !== binding.ownerUri)) throw new CalendlyCallTransportError(false);
+  const verify = async () => {
+    const row = (await database.query<{ provider_id: string; calendly_user_uri: string; connected_at: string; granted_scope: string }>(
+      "SELECT provider_id::text,calendly_user_uri,connected_at::text,granted_scope FROM provider_calendly_connections WHERE id::text=$1 AND disconnected_at IS NULL", [binding.connectionId])).rows[0];
+    const scopes = new Set((row?.granted_scope ?? "").split(/\s+/));
+    if (!row || row.provider_id !== binding.providerId || row.calendly_user_uri !== binding.ownerUri || row.connected_at !== binding.connectedAt
+      || !hasCalendlyEventTypeReadScope(row.granted_scope) || !scopes.has("scheduled_events:read") || !scopes.has("scheduled_events:write")) throw new CalendlyCallTransportError(false);
+  };
+  let token: string;
+  try {
+    await verify();
+    if (!await enforceRateLimit({ request, userId: binding.ownerUri, bucket: "calendly_calls_upstream", limit: 20, windowSeconds: 60 })) throw new CalendlyCallTransportError(false, 429);
+    const auth = await connectionToken(binding.connectionId);
+    if (auth.connection.provider_id !== binding.providerId || auth.connection.calendly_user_uri !== binding.ownerUri || auth.connection.connected_at !== binding.connectedAt) throw new Error("Connection changed.");
+    await verify(); token = auth.token;
+  } catch (error) { if (error instanceof CalendlyCallTransportError) throw error; throw new CalendlyCallTransportError(false); }
+  let response: Response;
+  try {
+    response = await fetch(url, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store", redirect: "error", signal: AbortSignal.timeout(CALENDLY_REQUEST_TIMEOUT_MS) });
+  } catch { throw new CalendlyCallTransportError(true); }
+  if (!response.ok) throw new CalendlyCallTransportError(true, response.status);
+  try { return await response.json() as T; } catch { throw new CalendlyCallTransportError(true, response.status); }
 }
