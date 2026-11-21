@@ -4362,6 +4362,55 @@ html[data-theme="dark"] :where(.account-page, .dashboard-page)
   color: #a6a6ad !important;
 }
 
+/* Public search and listing controls need a matched surface, border, and ink.
+   Scope these tokens so they do not override other button styles or workflows. */
+:is(.premium-featured, .service-detail-page) {
+  --marketplace-control-surface: #ffffff;
+  --marketplace-control-ink: #183126;
+  --marketplace-control-border: #79847d;
+  --marketplace-control-hover: #edf3ed;
+  --marketplace-control-hover-border: #496659;
+  --marketplace-control-focus: #24583e;
+}
+
+html[data-theme="dark"] :is(.premium-featured, .service-detail-page) {
+  --marketplace-control-surface: var(--card-hover);
+  --marketplace-control-ink: var(--text-primary);
+  --marketplace-control-border: #828288;
+  --marketplace-control-hover: #303035;
+  --marketplace-control-hover-border: var(--brand);
+  --marketplace-control-focus: var(--focus-ring);
+}
+
+/* Override the legacy generic white-background utility normalizer only here. */
+:is(
+  #nearby-listings .marketplace-delivery-choice:not([aria-current="page"]),
+  .service-detail-page .service-detail-actions :is(.back-button, .listing-share-trigger),
+  .service-detail-page .service-detail-contact
+) {
+  background-color: var(--marketplace-control-surface) !important;
+  border-color: var(--marketplace-control-border) !important;
+  color: var(--marketplace-control-ink) !important;
+}
+
+:is(
+  #nearby-listings .marketplace-delivery-choice:not([aria-current="page"]),
+  .service-detail-page .service-detail-actions :is(.back-button, .listing-share-trigger),
+  .service-detail-page .service-detail-contact
+):hover {
+  background-color: var(--marketplace-control-hover) !important;
+  border-color: var(--marketplace-control-hover-border) !important;
+}
+
+:is(
+  #nearby-listings .marketplace-delivery-choice,
+  .service-detail-page .service-detail-actions :is(.back-button, .listing-share-trigger),
+  .service-detail-page .service-detail-contact
+):focus-visible {
+  outline: 3px solid var(--marketplace-control-focus) !important;
+  outline-offset: 2px;
+}
+
 html[data-theme="dark"] .dashboard-page table tbody tr {
   background-color: var(--card) !important;
   color: var(--text-primary) !important;
