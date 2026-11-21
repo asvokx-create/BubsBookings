@@ -124,7 +124,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
               <Link href="/guides">Resources</Link>
             </nav>
             <div className="premium-header-actions flex items-center gap-2">
-              <MobileSiteNav />
+              <MobileSiteNav homeOverlay />
               <div className="home-header-account"><AccountNav /></div>
             </div>
           </div>
@@ -162,7 +162,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         </div>
       </section>
 
-      <section id="nearby-listings" className="premium-featured site-container scroll-mt-6 px-4 sm:px-6" aria-labelledby="featured-services-heading">
+      <section id="nearby-listings" tabIndex={-1} className="premium-featured site-container scroll-mt-6 px-4 sm:px-6" aria-labelledby="featured-services-heading">
         <div className="premium-section-heading">
           <div><p>Featured services</p><h2 id="featured-services-heading">Explore services {city ? `near ${city}` : "on BubsBookings"}.</h2></div>
           <Link href={nearbyServicesHref}>Browse all services <UiIcon name="arrow-right" /></Link>

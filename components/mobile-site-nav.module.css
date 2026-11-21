@@ -1,0 +1,79 @@
+.overlay {
+  overflow: hidden;
+  animation: backdrop-in 150ms ease-out both;
+}
+
+.drawer {
+  color: #102d22;
+  border-start-start-radius: 1.5rem;
+  border-end-start-radius: 1.5rem;
+  overscroll-behavior: contain;
+  padding-inline-start: max(1.25rem, env(safe-area-inset-left));
+  padding-inline-end: max(1.25rem, env(safe-area-inset-right));
+  animation: drawer-in 180ms cubic-bezier(.2, .7, .3, 1) both;
+}
+
+.close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .35rem;
+  flex-shrink: 0;
+  min-width: 44px;
+  min-height: 44px;
+  padding-inline: .65rem;
+  border: 1px solid #c8d4ca;
+  border-radius: 999px;
+  background: #fff;
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+.navLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem;
+  min-height: 48px;
+  padding: .625rem .875rem;
+  border-radius: .85rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.navLink:hover, .close:hover, .secondaryAction:hover {
+  background: #e5eddf;
+}
+
+.primaryLink, .primaryLink:hover {
+  background: #eee25a;
+  font-weight: 750;
+}
+
+.primaryLink:hover {
+  text-decoration: underline;
+}
+
+.secondaryAction {
+  background: #fff;
+  border: 1px solid #c8d4ca;
+}
+
+.drawer :is(a, button):focus-visible {
+  outline: 2px solid #194631;
+  outline-offset: 2px;
+}
+
+@keyframes drawer-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay, .drawer { animation: none; }
+}
