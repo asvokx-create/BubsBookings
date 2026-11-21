@@ -16,6 +16,7 @@ import { getServiceAreaCoordinates, serviceAreaSlug } from "@/lib/service-areas"
 import ListingPhotoGallery from "@/components/listing-photo-gallery";
 import MobileSiteNav from "@/components/mobile-site-nav";
 import BackButton from "@/components/back-button";
+import { marketplaceReturnPath } from "@/lib/listing-return";
 import ListingShareButton from "@/components/listing-share-button";
 import { deliveryLabel } from "@/lib/service-delivery";
 import UiIcon from "@/components/ui-icon";
@@ -52,8 +53,8 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
   const query = await searchParams;
   const requestedReturnPath = query.from;
   const returnPathValue = Array.isArray(requestedReturnPath) ? requestedReturnPath[0] : requestedReturnPath;
-  const validMarketplaceReturn = returnPathValue && !returnPathValue.startsWith("//") && (returnPathValue === "/" || returnPathValue.startsWith("/?") || returnPathValue.startsWith("/#") || returnPathValue.startsWith("/services"));
-  const servicesReturnPath = validMarketplaceReturn ? returnPathValue : "/#nearby-listings";
+  const contextualReturn = marketplaceReturnPath(returnPathValue, slug);
+  const servicesReturnPath = contextualReturn ?? "/#nearby-listings";
   const parentBookingId = typeof query.repeatOf === "string" ? query.repeatOf : "";
   const service = await getServiceBySlug(slug);
   const session = isAuthConfigured() ? await auth.api.getSession({ headers: await headers() }) : null;
@@ -110,7 +111,7 @@ export default async function ServicePage({ params, searchParams }: PageProps<"/
       </header>
 
       <div className="service-detail-container site-container px-4 py-7 sm:px-6 sm:py-12">
-        <div className="service-detail-actions flex items-center justify-between gap-3"><BackButton label={returnPathValue ? "Back to results" : "Back to services"} fallbackHref={servicesReturnPath} /><ListingShareButton serviceId={service.id} slug={service.slug} title={service.title} description={`Check out ${service.title} by ${service.provider} on BubsBookings.`} /></div>
+        <div className="service-detail-actions flex items-center justify-between gap-3"><BackButton label={contextualReturn ? "Back to results" : "Back to services"} fallbackHref={servicesReturnPath} contextualListingReturn={Boolean(contextualReturn)} /><ListingShareButton serviceId={service.id} slug={service.slug} title={service.title} description={`Check out ${service.title} by ${service.provider} on BubsBookings.`} /></div>
         <div className="service-detail-layout mt-7 grid gap-7 lg:grid-cols-[minmax(0,1fr)_minmax(20rem,25rem)] lg:gap-10">
           <div className="min-w-0">
             <ListingPhotoGallery images={service.imageUrls} title={service.title} fallbackGradient={visual.gradient} fallbackCategory={service.category}><span className="absolute left-6 top-6 z-20 rounded-full bg-white/90 px-4 py-2 text-xs font-bold shadow-sm backdrop-blur">{service.pricingType === "QUOTE_ONLY" ? "Custom Quote" : "New listing"}</span><FavoriteButton serviceId={service.id} serviceTitle={service.title} className="absolute right-6 top-6 z-20 grid h-12 w-12 place-items-center rounded-full bg-white/90 text-2xl shadow-sm backdrop-blur" /></ListingPhotoGallery>
