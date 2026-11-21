@@ -10,7 +10,7 @@ import { PreferencesProvider } from "@/components/preferences-provider";
 import InternalNavigationHistory from "@/components/internal-navigation-history";
 import AffiliateAttributionTracker from "@/components/affiliate-attribution-tracker";
 import GrowthAttributionTracker from "@/components/growth-attribution-tracker";
-import { AnalyticsConsentManager } from "@/components/analytics-consent";
+import { AnalyticsConsentManager, AnalyticsConsentPlacement } from "@/components/analytics-consent";
 import "./globals.css";
 
 const googleSiteVerification = process.env.GOOGLE_SITE_VERIFICATION?.trim();
@@ -66,9 +66,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(organizationJsonLd).replace(/</g, "\\u003c") }} />
         <PreferencesProvider>
           <Suspense fallback={null}><AnalyticsTracker /><InternalNavigationHistory /><AffiliateAttributionTracker /><GrowthAttributionTracker /></Suspense>
-          <div id="site-content" tabIndex={-1} className="contents">{children}</div>
-          <SiteFooter />
-          <AnalyticsConsentManager />
+          <AnalyticsConsentPlacement>
+            <div id="site-content" tabIndex={-1} className="contents">{children}</div>
+            <SiteFooter />
+            <AnalyticsConsentManager />
+          </AnalyticsConsentPlacement>
         </PreferencesProvider>
         <GoogleAnalytics />
       </body>

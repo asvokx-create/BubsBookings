@@ -1,0 +1,121 @@
+/* Homepage marketplace preview. Scoped to the page; does not restyle the shared search or card elsewhere. */
+.premium-home .marketplace-hero {
+  min-height: 0;
+  background:
+    radial-gradient(ellipse at 90% 10%, #2a614a 0, transparent 56%),
+    linear-gradient(145deg, #153d2f, #0e2b21 75%);
+}
+.marketplace-hero .premium-home-header {
+  position: relative;
+  background: #102d22;
+}
+.marketplace-hero .premium-hero-content {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(15rem, .68fr);
+  align-items: center;
+  gap: 2rem;
+  padding-block: clamp(2.5rem, 5.2vw, 4.5rem) 1.5rem;
+}
+.marketplace-hero .premium-hero-copy { max-width: 47rem; }
+.marketplace-hero .premium-hero-copy h1 {
+  max-width: 15ch;
+  font-size: clamp(3.25rem, 5.25vw, 5.6rem);
+  font-weight: 800;
+  letter-spacing: -.058em;
+  line-height: 1.01;
+  text-wrap: balance;
+}
+.marketplace-hero .premium-hero-copy h1 span {
+  display: inline;
+  padding-bottom: 0;
+  background: none;
+  color: #f1e769;
+}
+.marketplace-hero .premium-hero-copy > p:last-child {
+  margin-top: .8rem;
+  color: #e3eee7;
+  font-size: clamp(.95rem, 1.3vw, 1.12rem);
+  line-height: 1.45;
+}
+.marketplace-hero-art {
+  position: relative;
+  justify-self: end;
+  width: min(100%, 20rem);
+  aspect-ratio: 1.55;
+  pointer-events: none;
+  overflow: hidden;
+  border: 1px solid #79ad9766;
+  border-radius: 48% 48% 38% 38% / 58% 58% 42% 42%;
+  background:
+    radial-gradient(circle at 66% 34%, #f0e66a 0 5%, transparent 5.5%),
+    linear-gradient(148deg, #2e634c 0%, #204c3a 58%, #173a2e 58%);
+}
+.marketplace-hero-art::before,
+.marketplace-hero-art::after {
+  content: "";
+  position: absolute;
+  width: 76%;
+  aspect-ratio: 1.25;
+  left: -7%;
+  bottom: -44%;
+  transform: rotate(-24deg);
+  border: 1px solid #8abea5;
+  border-radius: 50%;
+  box-shadow: 0 0 0 .65rem #87bea338, 0 0 0 1.35rem #87bea32a, 0 0 0 2.1rem #87bea31b;
+}
+.marketplace-hero-art::after { left: 43%; bottom: -53%; transform: rotate(24deg); }
+.marketplace-hero .premium-search-dock {
+  position: relative;
+  inset: auto;
+  padding-bottom: clamp(1.5rem, 3vw, 2.5rem);
+}
+.marketplace-hero .premium-search-dock .home-search-bar {
+  backdrop-filter: none;
+  box-shadow: none;
+}
+.marketplace-hero .premium-search-dock .home-search-submit {
+  min-height: 3rem;
+  min-width: 7.75rem;
+  background: #eee25a;
+  color: #183126;
+}
+.marketplace-hero .premium-search-dock .home-search-submit:hover { background: #f5ea6b; }
+.marketplace-hero .premium-search-dock .home-search-submit:focus-visible {
+  outline: 3px solid #4a705d;
+  outline-offset: 3px;
+}
+.premium-home .premium-featured .marketplace-cover-fallback {
+  background-image: radial-gradient(ellipse at 80% 12%, #ffffff88, transparent 58%), linear-gradient(144deg, #e4eee2, #c6dbcc);
+}
+html[data-theme="dark"] .premium-home .premium-featured .marketplace-cover-fallback {
+  background-image: radial-gradient(ellipse at 80% 12%, #d8ecd722, transparent 58%), linear-gradient(144deg, #263e32, #1a2d25);
+}
+.marketplace-cover-fallback .marketplace-cover-symbol {
+  display: grid;
+  width: auto;
+  height: auto;
+  max-width: 76%;
+  gap: .375rem;
+  justify-items: center;
+  color: #214838;
+  font-size: .72rem;
+  font-weight: 700;
+  text-align: center;
+}
+html[data-theme="dark"] .marketplace-cover-fallback .marketplace-cover-symbol { color: #dbede1; }
+
+@media (max-width: 1023px) {
+  .marketplace-hero .premium-hero-content {
+    grid-template-columns: minmax(0, 1fr);
+    padding-block: 1.375rem 1.125rem;
+  }
+  .marketplace-hero .premium-hero-copy h1 { font-size: clamp(1.9rem, 6.5vw, 3.45rem); }
+  .marketplace-hero-art { display: none; }
+}
+@media (max-width: 639px) {
+  .marketplace-hero .premium-hero-copy > p:last-child { margin-top: .5rem; }
+  .marketplace-hero .premium-search-dock { padding-bottom: 1.125rem; }
+  .marketplace-hero .premium-search-dock .home-search-input { min-height: 3.05rem; }
+  .marketplace-hero .premium-search-dock .home-search-input input { padding-block: .65rem; }
+}

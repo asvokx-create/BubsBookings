@@ -4527,3 +4527,59 @@ html[data-theme="dark"] .home-service-favorite {
 html[data-theme="dark"] .provider-onboarding label:has(input[type="radio"]:focus-visible) {
   outline-color: #eee25a;
 }
+
+
+/* A mobile homepage's first analytics choice follows search in normal flow.
+   The default and explicitly reopened docks use their existing styles. */
+.home-analytics-choices-slot:empty { display: none; }
+.home-analytics-inline-panel {
+  --inline-consent-ink: #183126;
+  --inline-consent-muted: #43594c;
+  --inline-consent-border: #79847d;
+  --inline-consent-surface: #ffffff;
+  --inline-consent-hover: #edf3ed;
+  --inline-consent-focus: #24583e;
+  margin: .75rem 1rem;
+  border: 1px solid var(--inline-consent-border);
+  border-radius: .75rem;
+  background: var(--inline-consent-surface);
+  padding: .875rem 1rem;
+  color: var(--inline-consent-ink);
+}
+html[data-theme="dark"] .home-analytics-inline-panel {
+  --inline-consent-ink: var(--text-primary);
+  --inline-consent-muted: var(--text-secondary);
+  --inline-consent-border: #828288;
+  --inline-consent-surface: var(--card);
+  --inline-consent-hover: var(--card-hover);
+  --inline-consent-focus: var(--focus-ring);
+}
+.home-analytics-explanation { color: var(--inline-consent-muted); }
+.home-analytics-inline-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-rows: 1fr;
+  gap: .5rem;
+}
+.home-analytics-inline-choice {
+  min-height: 2.75rem;
+  min-width: 0;
+  border: 1px solid var(--inline-consent-border);
+  border-radius: .625rem;
+  background: var(--inline-consent-surface);
+  padding: .5rem .75rem;
+  color: var(--inline-consent-ink);
+  font-size: .875rem;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.home-analytics-inline-choice:hover { background: var(--inline-consent-hover); }
+.home-analytics-inline-choice:focus-visible,
+.home-analytics-explanation a:focus-visible {
+  outline: 3px solid var(--inline-consent-focus) !important;
+  outline-offset: 2px;
+}
+@media (min-width: 460px) {
+  .home-analytics-inline-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

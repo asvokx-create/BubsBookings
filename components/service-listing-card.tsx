@@ -49,15 +49,18 @@ export default function ServiceListingCard({
   service,
   returnPath,
   locationLabel,
+  showCategoryCover = false,
   favoriteOnChange,
 }: {
   service: CompactService;
   returnPath?: string;
   locationLabel?: string;
+  showCategoryCover?: boolean;
   favoriteOnChange?: (saved: boolean) => void;
 }) {
   const imageUrl = service.imageUrls?.[0] || service.imageUrl || "";
   const visual = getServiceCategoryIconConfig(service.category);
+  const categoryCover = !imageUrl && showCategoryCover;
   const href = cardHref(service, returnPath);
   const businessHref = providerHref(service);
   const delivery = service.deliveryType === "REMOTE" ? "Online" : service.deliveryType === "BOTH" ? "Local + online" : "In person";
@@ -73,8 +76,8 @@ export default function ServiceListingCard({
   return (
     <article className="premium-service-card compact-service-card" data-listing-return-card={returnPath ? service.slug : undefined}>
       <ListingResultLink href={href} listing={returnPath ? service.slug : undefined} kind="image" className="premium-service-image" aria-label={`View ${service.title}`}>
-        <div role={imageUrl ? undefined : "img"} aria-label={imageUrl ? undefined : `${service.title} cover`} className={imageUrl ? "" : `bg-gradient-to-br ${visual.background}`}>
-          {imageUrl ? <Image src={imageUrl} alt={`${service.title} cover`} fill loading="lazy" unoptimized sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 899px) 50vw, (max-width: 1199px) 33vw, 25vw" className="object-cover" /> : <ServiceCategoryIcon category={service.category} />}
+        <div role={imageUrl || categoryCover ? undefined : "img"} aria-label={imageUrl || categoryCover ? undefined : `${service.title} cover`} className={imageUrl ? "" : categoryCover ? "marketplace-cover-fallback" : `bg-gradient-to-br ${visual.background}`}>
+          {imageUrl ? <Image src={imageUrl} alt={`${service.title} cover`} fill loading="lazy" unoptimized sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 899px) 50vw, (max-width: 1199px) 33vw, 25vw" className="object-cover" /> : categoryCover ? <div className="marketplace-cover-symbol" aria-hidden="true"><ServiceCategoryIcon category={service.category} compact /><span>{service.category}</span></div> : <ServiceCategoryIcon category={service.category} />}
           <span className="premium-listing-delivery">{delivery}</span>
         </div>
       </ListingResultLink>

@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { usePathname } from "next/navigation";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 export type AnalyticsConsent = "granted" | "denied" | null;
 
@@ -49,9 +51,40 @@ export function analyticsAllowed() {
   return typeof window !== "undefined" && readConsent() === "granted";
 }
 
+// Presentation only: the existing consent store and explicit footer reopen
+// remain the source of truth for whether the choices are shown.
+const HomeAnalyticsSlotContext = createContext<{
+  slot: HTMLDivElement | null;
+  register: (slot: HTMLDivElement | null) => void;
+} | null>(null);
+
+export function AnalyticsConsentPlacement({ children }: { children: ReactNode }) {
+  const [slot, register] = useState<HTMLDivElement | null>(null);
+  const value = useMemo(() => ({ slot, register }), [slot]);
+  return <HomeAnalyticsSlotContext.Provider value={value}>{children}</HomeAnalyticsSlotContext.Provider>;
+}
+
+export function HomeAnalyticsChoicesSlot() {
+  const placement = useContext(HomeAnalyticsSlotContext);
+  return <div ref={placement?.register} className="home-analytics-choices-slot" />;
+}
+
+const COMPACT_HOME_ANALYTICS = "(max-width: 639px)";
+function subscribeCompact(update: () => void) {
+  const media = window.matchMedia(COMPACT_HOME_ANALYTICS);
+  media.addEventListener("change", update);
+  return () => media.removeEventListener("change", update);
+}
+function readCompact() {
+  return window.matchMedia(COMPACT_HOME_ANALYTICS).matches;
+}
+
 export function AnalyticsConsentManager() {
   const { consent } = useAnalyticsConsent();
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+  const compact = useSyncExternalStore(subscribeCompact, readCompact, () => false);
+  const placement = useContext(HomeAnalyticsSlotContext);
 
   useEffect(() => {
     const show = () => setOpen(true);
@@ -70,20 +103,27 @@ export function AnalyticsConsentManager() {
 
   if (consent === undefined || (consent !== null && !open)) return null;
 
-  return (
-    <section aria-label="Analytics choices" className="fixed inset-x-3 bottom-3 z-[400] mx-auto max-w-3xl rounded-[1.5rem] border border-[#183126]/15 bg-[#fffefa] p-4 text-[#183126] shadow-[0_24px_80px_rgba(7,30,20,.28)] sm:bottom-5 sm:p-5">
+  const inline = !open && compact && pathname === "/";
+  // On a streaming home navigation, do not flash a fixed overlay while the
+  // inline slot is mounting. An explicit footer reopen still uses the dock.
+  if (inline && !placement?.slot) return null;
+  const panel = (
+    <section aria-label="Analytics choices" className={inline
+      ? "home-analytics-inline-panel"
+      : "fixed inset-x-3 bottom-3 z-[400] mx-auto max-w-3xl rounded-[1.5rem] border border-[#183126]/15 bg-[#fffefa] p-4 text-[#183126] shadow-[0_24px_80px_rgba(7,30,20,.28)] sm:bottom-5 sm:p-5"}>
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="max-w-xl">
           <h2 className="text-base font-extrabold">Your analytics choice</h2>
-          <p className="mt-1 text-sm leading-6 text-[#5f7168]">Optional browser analytics and Google Analytics help us understand how the marketplace is used. They stay off unless you allow them. Necessary sign-in, security, preferences, referral attribution, and account or transaction records are not changed by this choice. <Link href="/cookies" className="font-bold underline underline-offset-2">Cookie details</Link></p>
+          <p className={inline ? "home-analytics-explanation mt-1 text-sm leading-6" : "mt-1 text-sm leading-6 text-[#5f7168]"}>Optional browser analytics and Google Analytics help us understand how the marketplace is used. They stay off unless you allow them. Necessary sign-in, security, preferences, referral attribution, and account or transaction records are not changed by this choice. <Link href="/cookies" className="font-bold underline underline-offset-2">Cookie details</Link></p>
         </div>
-        <div className="flex shrink-0 flex-col gap-2 min-[430px]:flex-row">
-          <button type="button" onClick={() => choose("denied")} className="min-h-11 rounded-full border border-[#183126]/20 bg-white px-5 py-2.5 text-sm font-bold hover:bg-[#edf1ec]">Continue without analytics</button>
-          <button type="button" onClick={() => choose("granted")} className="min-h-11 rounded-full bg-[#183126] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#315846]">Allow analytics</button>
+        <div className={inline ? "home-analytics-inline-actions" : "flex shrink-0 flex-col gap-2 min-[430px]:flex-row"}>
+          <button type="button" onClick={() => choose("denied")} className={inline ? "home-analytics-inline-choice" : "min-h-11 rounded-full border border-[#183126]/20 bg-white px-5 py-2.5 text-sm font-bold hover:bg-[#edf1ec]"}>Continue without analytics</button>
+          <button type="button" onClick={() => choose("granted")} className={inline ? "home-analytics-inline-choice" : "min-h-11 rounded-full bg-[#183126] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#315846]"}>Allow analytics</button>
         </div>
       </div>
     </section>
   );
+  return inline && placement?.slot ? createPortal(panel, placement.slot) : panel;
 }
 
 export function AnalyticsChoicesButton({ className = "" }: { className?: string }) {
