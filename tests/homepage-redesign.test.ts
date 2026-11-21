@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -20,15 +20,17 @@ test("premium homepage retains live marketplace search and eligible listing data
   assert.doesNotMatch(home, /1,500\+|10,000\+|50\+|testimonial|guaranteed customers|guaranteed bookings/i);
 });
 
-test("premium hero uses an optimized people-free local asset and one search surface", () => {
+test("premium hero uses decorative CSS artwork and one discoverable search surface", () => {
   const home = read("app", "page.tsx");
   const search = read("components", "home-service-search.tsx");
   const css = read("app", "globals.css");
-  assert.ok(existsSync(join(root, "public", "images", "home-premium-hero.webp")));
-  assert.match(home, /src="\/images\/home-premium-hero\.webp"/);
-  assert.match(home, /alt="Modern lakeside home overlooking a mountain landscape"/);
+  const preview = read("app", "home-marketplace-preview.css");
+  assert.doesNotMatch(home, /home-premium-hero\.webp/);
+  assert.match(home, /className="marketplace-hero-art" aria-hidden="true"/);
+  assert.match(preview, /\.marketplace-hero-art \{ display: none; \}/);
+  assert.match(preview, /\.marketplace-hero \.premium-search-dock \{\s*position: relative;/);
   assert.equal((home.match(/<HomeServiceSearch/g) ?? []).length, 1);
-  assert.match(home, /Get things <span>done\.<\/span>/);
+  assert.match(home, /Find local and <span>online services\.<\/span>/);
   assert.doesNotMatch(home, /Local and remote service marketplace/i);
   assert.match(search, /xl:min-w-\[360px\]/);
   assert.match(search, /px-4 sm:px-5[^"]*xl:px-6/);

@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import Image from "next/image";
+import "./home-marketplace-preview.css";
 import Link from "next/link";
 import AccountNav from "@/components/account-nav";
+import { HomeAnalyticsChoicesSlot } from "@/components/analytics-consent";
 import BrandLockup from "@/components/brand-lockup";
 import CustomSelect from "@/components/custom-select";
 import HomeProviderShowcase from "@/components/home-provider-showcase";
@@ -111,9 +112,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
   return (
     <main className="premium-home min-h-screen overflow-x-clip bg-[#faf9f4] text-[#102d22]">
       <SearchResultsAnalytics query={query} category={selectedCategory} delivery={initialDelivery} location={location} radiusMiles={radius} resultCount={servicesWithinRange.length} />
-      <section className="premium-hero" aria-labelledby="premium-home-heading">
-        <Image src="/images/home-premium-hero.webp" alt="Modern lakeside home overlooking a mountain landscape" fill priority sizes="100vw" className="premium-hero-image object-cover" />
-        <div className="premium-hero-shade" aria-hidden="true" />
+      <section className="premium-hero marketplace-hero" aria-labelledby="premium-home-heading">
 
         <header className="premium-home-header">
           <div className="narrow-mobile-header site-container flex items-center justify-between gap-3 px-4 py-4 sm:px-6">
@@ -133,15 +132,18 @@ export default async function Home({ searchParams }: PageProps<"/">) {
 
         <div className="premium-hero-content site-container px-4 sm:px-6">
           <div className="premium-hero-copy">
-            <h1 id="premium-home-heading">Get things <span>done.</span></h1>
-            <p>Book local and online service providers for anything you need.</p>
+            <h1 id="premium-home-heading">Find local and <span>online services.</span></h1>
+            <p>Compare options and book the right provider for the job.</p>
           </div>
+          <div className="marketplace-hero-art" aria-hidden="true" />
         </div>
 
         <div className="premium-search-dock site-container px-4 sm:px-6">
           <HomeServiceSearch initialDelivery={initialDelivery} initialQuery={query} initialLocation={location} initialRadius={radius} restoreRemembered={!requestedLocation} />
         </div>
       </section>
+
+      <HomeAnalyticsChoicesSlot />
 
       <section aria-labelledby="category-heading" className="premium-categories site-container px-4 sm:px-6">
         <h2 id="category-heading" className="sr-only">Browse service categories</h2>
@@ -188,7 +190,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         </div>
         {(query || selectedCategory !== "All services" || initialDelivery !== "ALL" || maxPrice || maxDuration) && <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-bold"><span className="text-[#718078]">Active filters</span>{query && <span className="rounded-full bg-[#edf3e7] px-3 py-2">{query}</span>}{selectedCategory !== "All services" && <Link href={marketplaceHref({ category: "All services" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{selectedCategory} ×</Link>}{initialDelivery !== "ALL" && <Link href={marketplaceHref({ delivery: "ALL" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{deliveryLabel(initialDelivery)} ×</Link>}{maxPrice && <Link href={marketplaceHref({ maxPrice: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Up to ${maxPrice} ×</Link>}{maxDuration && <Link href={marketplaceHref({ maxDuration: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Est. up to {maxDuration >= 240 ? maxDuration === 480 ? "full day" : "half day" : `${maxDuration / 60} hr`} ×</Link>}</div>}
         {servicesWithinRange.length > 0 ? (
-          <div className="premium-listing-grid">{servicesWithinRange.map((service) => <ServiceListingCard key={service.id} service={service} returnPath={currentResultsPath} />)}</div>
+          <div className="premium-listing-grid">{servicesWithinRange.map((service) => <ServiceListingCard key={service.id} service={service} returnPath={currentResultsPath} showCategoryCover />)}</div>
         ) : (
           <div className="premium-empty-state">
             <ServiceCategoryIcon category="Home repair" />

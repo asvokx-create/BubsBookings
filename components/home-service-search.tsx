@@ -62,7 +62,7 @@ export default function HomeServiceSearch({
       )}
 
       <button type="submit" className="home-search-submit rounded-full bg-[#eee25a] px-5 py-3 text-sm font-bold text-[#183126] transition hover:bg-[#f5ea6b]">
-        Find a pro
+        Search services
       </button>
     </form>
   );

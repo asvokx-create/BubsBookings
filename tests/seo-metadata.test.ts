@@ -138,8 +138,10 @@ test("public slug routes are rejected before streaming so missing resources retu
 
 test("linked service-card artwork has an accessible text alternative", () => {
   const card = read("components", "service-listing-card.tsx");
-  assert.match(card, /role=\{imageUrl \? undefined : "img"\}/);
-  assert.match(card, /aria-label=\{imageUrl \? undefined : `\$\{service\.title\} cover`\}/);
+  assert.match(card, /role=\{imageUrl \|\| categoryCover \? undefined : "img"\}/);
+  assert.match(card, /aria-label=\{imageUrl \|\| categoryCover \? undefined : `\$\{service\.title\} cover`\}/);
+  assert.match(card, /<ListingResultLink[^>]*aria-label=\{`View \$\{service\.title\}`\}/);
+  assert.match(card, /className="marketplace-cover-symbol" aria-hidden="true"/);
   assert.match(card, /<Image src=\{imageUrl\} alt=\{`\$\{service\.title\} cover`\}/);
   for (const page of [["app", "companies", "[slug]", "page.tsx"], ["app", "locations", "[city]", "page.tsx"]]) assert.match(read(...page), /ServiceListingCard/);
 });
