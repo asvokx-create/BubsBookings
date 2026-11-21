@@ -52,10 +52,10 @@ test("service detail navigation retains marketplace filters and names the destin
   const detail = read("app", "services", "[slug]", "page.tsx");
 
   assert.match(services, /encodeURIComponent\(returnPath\)/);
-  assert.match(detail, /returnPathValue \? "Back to results" : "Back to services"/);
+  assert.match(detail, /contextualReturn \? "Back to results" : "Back to services"/);
   assert.match(detail, /fallbackHref=\{servicesReturnPath\}/);
-  assert.match(detail, /startsWith\("\/services"\)/);
-  assert.match(detail, /startsWith\("\/\?"\)/);
+  assert.match(detail, /marketplaceReturnPath\(returnPathValue, slug\)/);
+  assert.match(detail, /contextualListingReturn=\{Boolean\(contextualReturn\)\}/);
 });
 
 test("navigation history is tracked globally and BackButton is limited to nested experiences", () => {

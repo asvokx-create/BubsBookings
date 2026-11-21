@@ -8,6 +8,7 @@ import HomeProviderShowcase from "@/components/home-provider-showcase";
 import HomeServiceSearch from "@/components/home-service-search";
 import MobileSiteNav from "@/components/mobile-site-nav";
 import ServiceListingCard from "@/components/service-listing-card";
+import ListingResultsReturn from "@/components/listing-results-return";
 import SearchResultsAnalytics from "@/components/search-results-analytics";
 import ServiceDemandCapture from "@/components/service-demand-capture";
 import ServiceCategoryIcon from "@/components/service-category-icon";
@@ -162,9 +163,10 @@ export default async function Home({ searchParams }: PageProps<"/">) {
         </div>
       </section>
 
+      <ListingResultsReturn resultsPath={currentResultsPath} />
       <section id="nearby-listings" className="premium-featured site-container scroll-mt-6 px-4 sm:px-6" aria-labelledby="featured-services-heading">
         <div className="premium-section-heading">
-          <div><p>Featured services</p><h2 id="featured-services-heading">Explore services {city ? `near ${city}` : "on BubsBookings"}.</h2></div>
+          <div><p>Featured services</p><h2 id="featured-services-heading" tabIndex={-1}>Explore services {city ? `near ${city}` : "on BubsBookings"}.</h2></div>
           <Link href={nearbyServicesHref}>Browse all services <UiIcon name="arrow-right" /></Link>
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-2" role="group" aria-label="Service delivery filter">

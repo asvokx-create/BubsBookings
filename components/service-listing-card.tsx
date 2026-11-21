@@ -1,5 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
+import ListingResultLink from "@/components/listing-result-link";
 import FavoriteButton from "@/components/favorite-button";
 import ProfileAvatar from "@/components/profile-avatar";
 import ServiceCategoryIcon from "@/components/service-category-icon";
@@ -70,16 +71,16 @@ export default function ServiceListingCard({
       : "starting";
 
   return (
-    <article className="premium-service-card compact-service-card">
-      <Link href={href} className="premium-service-image" aria-label={`View ${service.title}`}>
+    <article className="premium-service-card compact-service-card" data-listing-return-card={returnPath ? service.slug : undefined}>
+      <ListingResultLink href={href} listing={returnPath ? service.slug : undefined} kind="image" className="premium-service-image" aria-label={`View ${service.title}`}>
         <div role={imageUrl ? undefined : "img"} aria-label={imageUrl ? undefined : `${service.title} cover`} className={imageUrl ? "" : `bg-gradient-to-br ${visual.background}`}>
           {imageUrl ? <Image src={imageUrl} alt={`${service.title} cover`} fill loading="lazy" unoptimized sizes="(max-width: 639px) calc(100vw - 32px), (max-width: 899px) 50vw, (max-width: 1199px) 33vw, 25vw" className="object-cover" /> : <ServiceCategoryIcon category={service.category} />}
           <span className="premium-listing-delivery">{delivery}</span>
         </div>
-      </Link>
+      </ListingResultLink>
       <div className="premium-service-content">
         <p className="premium-service-category">{service.category}</p>
-        <Link href={href}><h3>{service.title}</h3></Link>
+        <ListingResultLink href={href} listing={returnPath ? service.slug : undefined} kind="title"><h3>{service.title}</h3></ListingResultLink>
         <div className="premium-provider-row">
           <ProfileAvatar name={service.provider} imageUrl={service.providerProfileImageUrl} className="premium-provider-avatar" />
           <div className="min-w-0">

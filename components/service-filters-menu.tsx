@@ -34,7 +34,7 @@ export default function ServiceFiltersMenu({
   }, []);
 
   return (
-    <details ref={detailsRef} open={initiallyOpen} className="group shrink-0">
+    <details ref={detailsRef} data-marketplace-filters open={initiallyOpen} className="group shrink-0">
       {children}
       <button type="button" aria-label="Close filters" onClick={() => { if (detailsRef.current) detailsRef.current.open = false; }} className="fixed right-6 top-6 z-[130] hidden h-11 w-11 place-items-center rounded-full border border-[#183126]/15 bg-white shadow-lg group-open:grid sm:group-open:hidden"><UiIcon name="close" className="h-5 w-5" /></button>
     </details>

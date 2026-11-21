@@ -2,27 +2,30 @@
 
 import { useRouter } from "next/navigation";
 import UiIcon from "@/components/ui-icon";
+import { isRelatedListingDeparture } from "@/lib/listing-return";
 import { isSafeInternalPath, readInternalHistory, rewindInternalHistory, writeInternalHistory } from "@/lib/internal-navigation";
 
 type BackButtonProps = {
   label?: string;
   fallbackHref: string;
   preserveInternalHistory?: boolean;
+  contextualListingReturn?: boolean;
   className?: string;
 };
 
-export default function BackButton({ label = "Back", fallbackHref, preserveInternalHistory = true, className = "" }: BackButtonProps) {
+export default function BackButton({ label = "Back", fallbackHref, preserveInternalHistory = true, contextualListingReturn = false, className = "" }: BackButtonProps) {
   const router = useRouter();
 
   function goBack() {
     const currentPath = `${window.location.pathname}${window.location.search}`;
     const rewound = rewindInternalHistory(readInternalHistory(), currentPath);
-    if (preserveInternalHistory && rewound.previous && window.history.length > 1) {
+    if (preserveInternalHistory && rewound.previous && window.history.length > 1 &&
+        (!contextualListingReturn || isRelatedListingDeparture(rewound.previous))) {
       writeInternalHistory(rewound.history);
       router.back();
       return;
     }
-    router.push(isSafeInternalPath(fallbackHref) ? fallbackHref : "/");
+    router.push(isSafeInternalPath(fallbackHref) ? fallbackHref : "/", contextualListingReturn ? { scroll: false } : undefined);
   }
 
   return (
