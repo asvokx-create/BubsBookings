@@ -103,8 +103,8 @@ export function AnalyticsConsentManager() {
 
   if (consent === undefined || (consent !== null && !open)) return null;
 
-  const inline = !open && compact && pathname === "/";
-  // On a streaming home navigation, do not flash a fixed overlay while the
+  const inline = !open && compact && (pathname === "/" || pathname === "/pricing");
+  // On a streaming navigation with an inline slot, do not flash a fixed overlay while the
   // inline slot is mounting. An explicit footer reopen still uses the dock.
   if (inline && !placement?.slot) return null;
   const panel = (
