@@ -3218,11 +3218,26 @@ html[data-theme="dark"] .premium-steps li { border-color: #334039; }
   .premium-service-card { display: grid; grid-template-columns: minmax(7rem, 38%) 1fr; min-height: 10.75rem; }
   .premium-service-image > div { height: 100%; aspect-ratio: auto; }
   .premium-service-content { min-width: 0; padding: .75rem .75rem .8rem; }
-  .premium-service-content h3 { min-height: auto; font-size: .92rem; -webkit-line-clamp: 3; }
+  .compact-service-card .premium-service-content h3 {
+    display: block;
+    min-height: auto;
+    overflow: visible;
+    font-size: .92rem;
+    overflow-wrap: anywhere;
+    -webkit-line-clamp: none;
+  }
   .premium-service-meta { align-items: flex-start; flex-direction: column-reverse; }
   .premium-service-price { text-align: left; }
   .premium-provider-row { align-items: flex-start; }
-  .premium-service-favorite { top: .6rem; right: .6rem; }
+  .compact-service-card > .premium-service-favorite {
+    /* Keep the favorite button separate from the title and the photo link. */
+    grid-area: 1 / 1 / 2 / 2;
+    top: auto;
+    right: .6rem;
+    bottom: .6rem;
+    width: 2.75rem !important;
+    height: 2.75rem !important;
+  }
   .premium-listing-delivery { max-width: calc(100% - 1.5rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .premium-how { padding-top: 3.4rem; padding-bottom: 3.4rem; }
   .premium-steps { grid-template-columns: 1fr; gap: 1.9rem; }
