@@ -79,7 +79,10 @@ export async function sendBookingUpdateEmails(bookingId: string, event: "request
   if (event === "cancelled" && booking.provider_notifications) await sendTransactionalEmail({ to: booking.provider_email, userId: booking.provider_user_id, bookingId, emailType: "booking_cancelled_provider", subject: content.subject, heading: content.heading, message: `${booking.customer_name}'s ${booking.service_title} booking for ${when} was cancelled.`, actionLabel: "View bookings", actionUrl: "/provider/dashboard/bookings" });
 }
 
-export async function sendBookingReminder(booking: BookingEmailRow, hours: 24 | 1) {
+export async function sendBookingReminder(booking: BookingEmailRow, hours: 24 | 1, occurrence = "0") {
+  // Keep the original implicit key untouched for all legacy occurrences.
+  const key = (recipient: "customer" | "provider") => occurrence === "0" ? {}
+    : { idempotencyKey: `booking-reminder-${booking.id}-${hours}h-${recipient}-r${occurrence}` };
   const when = appointmentLabel(booking.starts_at);
   const until = appointmentLabel(booking.ends_at);
   const pricing = booking.pricing_type_snapshot === "QUOTE_ONLY"
@@ -92,8 +95,8 @@ export async function sendBookingReminder(booking: BookingEmailRow, hours: 24 | 
     ? providerMessage
     : `${booking.service_title} is scheduled for ${when}, and payment is still due. Open your booking to pay through Stripe before the provider arrives.`;
   const results = await Promise.all([
-    booking.customer_notifications ? sendTransactionalEmail({ to: booking.customer_email, userId: booking.customer_id, bookingId: booking.id, emailType: `reminder_${hours}h_customer`, subject: `Reminder: ${booking.service_title} is coming up`, heading: hours === 24 ? "Your booking is tomorrow" : "Your booking starts soon", message: customerMessage, actionLabel: booking.payment_status === "paid" ? "View booking" : "Pay through Stripe", actionUrl: `/account/bookings/${booking.id}` }) : null,
-    booking.provider_notifications ? sendTransactionalEmail({ to: booking.provider_email, userId: booking.provider_user_id, bookingId: booking.id, emailType: `reminder_${hours}h_provider`, subject: `Reminder: ${booking.service_title} is coming up`, heading: hours === 24 ? "You have a booking tomorrow" : "Your booking starts soon", message: providerMessage, actionLabel: "View bookings", actionUrl: "/provider/dashboard/bookings" }) : null,
+    booking.customer_notifications ? sendTransactionalEmail({ to: booking.customer_email, userId: booking.customer_id, bookingId: booking.id, emailType: `reminder_${hours}h_customer`, ...key("customer"), subject: `Reminder: ${booking.service_title} is coming up`, heading: hours === 24 ? "Your booking is tomorrow" : "Your booking starts soon", message: customerMessage, actionLabel: booking.payment_status === "paid" ? "View booking" : "Pay through Stripe", actionUrl: `/account/bookings/${booking.id}` }) : null,
+    booking.provider_notifications ? sendTransactionalEmail({ to: booking.provider_email, userId: booking.provider_user_id, bookingId: booking.id, emailType: `reminder_${hours}h_provider`, ...key("provider"), subject: `Reminder: ${booking.service_title} is coming up`, heading: hours === 24 ? "You have a booking tomorrow" : "Your booking starts soon", message: providerMessage, actionLabel: "View bookings", actionUrl: "/provider/dashboard/bookings" }) : null,
   ]);
   return results.every((result) => result === null || result.sent);
 }

@@ -147,9 +147,16 @@ export async function PATCH(request: Request, context: { params: Promise<{ booki
     } else status = action === "decline" ? "declined" : "withdrawn";
     await client.query(`UPDATE booking_reschedule_requests SET status=$2,response_reason=$3,responded_by=$4,responded_at=now() WHERE id::text=$1`,
       [requestId, status, reason, session.user.id]);
-    if (status === "approved") await client.query(`UPDATE bookings SET starts_at=$2,ends_at=$3,
-      reschedule_requested_by=NULL,reschedule_starts_at=NULL,reschedule_ends_at=NULL,reschedule_reason=NULL,reschedule_requested_at=NULL
-      WHERE id::text=$1`, [bookingId, proposal.proposed_starts_at, proposal.proposed_ends_at]);
+    if (status === "approved") {
+      // Enable only after all scheduled/manual reminder workers use occurrence guards.
+      const rearm = process.env.BOOKING_REMINDER_OCCURRENCE_REARM === "true";
+      await client.query(`UPDATE bookings SET starts_at=$2,ends_at=$3,
+        reminder_occurrence=reminder_occurrence + CASE WHEN $4::boolean AND starts_at IS DISTINCT FROM $2::timestamptz THEN 1 ELSE 0 END,
+        reminder_24h_sent_at=CASE WHEN $4::boolean AND starts_at IS DISTINCT FROM $2::timestamptz THEN NULL ELSE reminder_24h_sent_at END,
+        reminder_1h_sent_at=CASE WHEN $4::boolean AND starts_at IS DISTINCT FROM $2::timestamptz THEN NULL ELSE reminder_1h_sent_at END,
+        reschedule_requested_by=NULL,reschedule_starts_at=NULL,reschedule_ends_at=NULL,reschedule_reason=NULL,reschedule_requested_at=NULL
+        WHERE id::text=$1`, [bookingId, proposal.proposed_starts_at, proposal.proposed_ends_at, rearm]);
+    }
     const messages = {
       approved: "The proposed appointment time was approved. The booking calendar was updated.",
       declined: "The reschedule request was declined. The original booking time remains confirmed.",

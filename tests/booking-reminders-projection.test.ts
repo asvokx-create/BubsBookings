@@ -52,7 +52,7 @@ test("scheduled reminders select end time and pricing snapshots for both recipie
       CREATE TABLE services (id text PRIMARY KEY, title text, business_name text);
       CREATE TABLE provider_profiles (id text PRIMARY KEY, user_id text, plan text);
       CREATE TABLE bookings (
-        id text PRIMARY KEY, service_id text, provider_id text, customer_id text,
+        id uuid PRIMARY KEY, service_id text, provider_id text, customer_id text,
         starts_at timestamptz, ends_at timestamptz, payment_status text, status text,
         price_cents integer, pricing_type_snapshot text, hourly_rate_cents_snapshot integer, billable_duration_minutes integer,
         reminder_24h_sent_at timestamptz, reminder_1h_sent_at timestamptz
@@ -63,11 +63,12 @@ test("scheduled reminders select end time and pricing snapshots for both recipie
       INSERT INTO services VALUES ('service', 'Fixture service', 'Fixture business');
       INSERT INTO provider_profiles VALUES ('starter', 'p', 'starter'), ('pro', 'p', 'pro');
       INSERT INTO bookings VALUES
-        ('fixed', 'service', 'starter', 'c', now() + interval '24 hours', now() + interval '26 hours', 'paid', 'confirmed', 14999, 'FIXED', NULL, 120, NULL, NULL),
-        ('hourly', 'service', 'pro', 'c', now() + interval '1 hour', now() + interval '150 minutes', 'paid', 'confirmed', 12000, 'HOURLY', 8000, 90, NULL, NULL),
-        ('quote', 'service', 'starter', 'c', now() + interval '24 hours', now() + interval '25 hours', 'unpaid', 'confirmed', 0, 'QUOTE_ONLY', NULL, 60, NULL, NULL),
-        ('starter-soon', 'service', 'starter', 'c', now() + interval '1 hour', now() + interval '2 hours', 'paid', 'confirmed', 5000, 'FIXED', NULL, 60, NULL, NULL);
+        ('00000000-0000-4000-8000-000000000001', 'service', 'starter', 'c', now() + interval '24 hours', now() + interval '26 hours', 'paid', 'confirmed', 14999, 'FIXED', NULL, 120, NULL, NULL),
+        ('00000000-0000-4000-8000-000000000002', 'service', 'pro', 'c', now() + interval '1 hour', now() + interval '150 minutes', 'paid', 'confirmed', 12000, 'HOURLY', 8000, 90, NULL, NULL),
+        ('00000000-0000-4000-8000-000000000003', 'service', 'starter', 'c', now() + interval '24 hours', now() + interval '25 hours', 'unpaid', 'confirmed', 0, 'QUOTE_ONLY', NULL, 60, NULL, NULL),
+        ('00000000-0000-4000-8000-000000000004', 'service', 'starter', 'c', now() + interval '1 hour', now() + interval '2 hours', 'paid', 'confirmed', 5000, 'FIXED', NULL, 60, NULL, NULL);
     `);
+    await db.exec(fs.readFileSync(new URL("../database/migrations/118_booking_reminder_occurrence.sql", import.meta.url), "utf8"));
     const scheduled = await db.query<{ id: string; starts_at: Date; ends_at: Date }>("SELECT id, starts_at, ends_at FROM bookings");
     const format = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Los_Angeles" });
     const rangeFor = (id: string) => {
@@ -79,11 +80,11 @@ test("scheduled reminders select end time and pricing snapshots for both recipie
     assert.equal(outcome.configured, true);
     assert.equal(outcome.processed, 3);
     assert.equal(captured.length, 6);
-    assert.equal(captured.some(({ bookingId }) => bookingId === "starter-soon"), false);
+    assert.equal(captured.some(({ bookingId }) => bookingId === "00000000-0000-4000-8000-000000000004"), false);
 
     for (const [id, hours, expectedPrice] of [
-      ["fixed", 24, "Service price $149.99."],
-      ["hourly", 1, "1.5 hours at $80.00/hr; service subtotal $120.00."],
+      ["00000000-0000-4000-8000-000000000001", 24, "Service price $149.99."],
+      ["00000000-0000-4000-8000-000000000002", 1, "1.5 hours at $80.00/hr; service subtotal $120.00."],
     ] as const) {
       for (const recipient of ["customer", "provider"] as const) {
         const reminder = captured.find((email) => email.bookingId === id && email.emailType === `reminder_${hours}h_${recipient}`);
@@ -95,10 +96,10 @@ test("scheduled reminders select end time and pricing snapshots for both recipie
       }
     }
 
-    const quoteProvider = captured.find((email) => email.bookingId === "quote" && email.emailType === "reminder_24h_provider");
-    const quoteCustomer = captured.find((email) => email.bookingId === "quote" && email.emailType === "reminder_24h_customer");
+    const quoteProvider = captured.find((email) => email.bookingId === "00000000-0000-4000-8000-000000000003" && email.emailType === "reminder_24h_provider");
+    const quoteCustomer = captured.find((email) => email.bookingId === "00000000-0000-4000-8000-000000000003" && email.emailType === "reminder_24h_customer");
     assert.ok(quoteProvider && quoteCustomer);
-    assert.ok(quoteProvider.message.includes(rangeFor("quote")), quoteProvider.message);
+    assert.ok(quoteProvider.message.includes(rangeFor("00000000-0000-4000-8000-000000000003")), quoteProvider.message);
     assert.match(quoteProvider.message, /Custom quote pending\. No price has been approved or charged\./);
     assert.match(quoteCustomer.message, /payment is still due/);
     assert.doesNotMatch(quoteCustomer.message, /Custom quote|Service price|NaN/);

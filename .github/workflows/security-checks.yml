@@ -26,6 +26,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      reminder-postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: reminder_fixture
+          POSTGRES_PASSWORD: reminder_fixture
+          POSTGRES_DB: reminder_fixture
+        ports:
+          - "127.0.0.1:55433:5432"
+        options: >-
+          --health-cmd "pg_isready -U reminder_fixture -d reminder_fixture"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       BETTER_AUTH_SECRET: local-ci-validation-secret-at-least-32-characters
       DATABASE_URL: postgresql://bookme:bookme@127.0.0.1:5432/bookme
@@ -44,5 +57,10 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run test:booking-fee-migration
+      - name: Verify rescheduled reminder concurrency on isolated PostgreSQL
+        timeout-minutes: 2
+        env:
+          REMINDER_OCCURRENCE_TEST_DATABASE_URL: "postgresql://reminder_fixture:reminder_fixture@127.0.0.1:55433/reminder_fixture"
+        run: node scripts/test-reschedule-reminders-real-postgres.cjs
       - run: npm run lint
       - run: npm run build
