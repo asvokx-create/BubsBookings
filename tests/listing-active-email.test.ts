@@ -14,12 +14,12 @@ async function fixture(publicAtStart = false) {
   const db = new PGlite();
   await db.exec(`CREATE TABLE "user"(id text PRIMARY KEY,email text,name text);
     CREATE TABLE provider_profiles(id uuid PRIMARY KEY,user_id text,business_name text,is_active boolean,age_verification_status text);
-    CREATE TABLE provider_companies(id uuid PRIMARY KEY,is_active boolean);
+    CREATE TABLE provider_companies(id uuid PRIMARY KEY,provider_id uuid,name text,is_active boolean);
     CREATE TABLE admin_audit_log(actor_user_id text,action text,target_type text,target_id text,details jsonb);
     CREATE TABLE services(id uuid PRIMARY KEY,provider_id uuid,company_id uuid,title text,business_name text,slug text,is_active boolean,provider_deleted_at timestamptz);
     INSERT INTO "user" VALUES('owner','synthetic@example.invalid','Jo Provider');
     INSERT INTO provider_profiles VALUES('${provider}','owner','Test business',true,'${publicAtStart ? 'verified' : 'requires_input'}');
-    INSERT INTO provider_companies VALUES('${company}',true);
+    INSERT INTO provider_companies VALUES('${company}','${provider}','Fixture company',true);
     INSERT INTO services VALUES('${service}','${provider}','${company}','Test service','Listing business','test-service',true,NULL);`);
   await db.exec(migration);
   const sent: Record<string, unknown>[] = [];
@@ -33,7 +33,7 @@ async function fixture(publicAtStart = false) {
     return db.query(sql, params);
   };
   const exports: Record<string, (...args: unknown[]) => Promise<unknown>> = {};
-  const sandbox = { exports, require: (name: string) => {
+  const sandbox = { exports, Buffer, require: (name: string) => {
     if (name === 'server-only') return {};
     if (name === './database') return { database: { query, connect: async () => ({ query, release() {} }) } };
     if (name === './email') return { isEmailConfigured: () => configured, sendTransactionalEmail: async (payload: Record<string, unknown>) => {
@@ -226,4 +226,32 @@ test('closing or switching accounts prevents stale fetch and send refresh from r
   await refresh({ id: 'a' }); assert.equal(pending.length, 0);
   assert.match(ui, /key=\{selectedAccount.id\}/);
   assert.match(ui, /if \(!dialogActive.current\) return;\s*setActivationEmailResult/);
+});
+
+test('grouped portfolio preserves targeted cadence, ignores new siblings during frozen retry, and holds withdrawn siblings', async () => {
+  const f = await fixture(true);
+  const otherCompany = '00000000-0000-0000-0000-000000000019';
+  const otherService = '00000000-0000-0000-0000-000000000020';
+  const newService = '00000000-0000-0000-0000-000000000021';
+  try {
+    await f.db.query('INSERT INTO provider_companies VALUES($1,$2,$3,true)', [otherCompany, provider, 'Other company 👩‍💻']);
+    await f.db.query('INSERT INTO services VALUES($1,$2,$3,$4,$5,$6,true,NULL)', [otherService, provider, otherCompany, 'پرداخت‌کار\u2028بی‌خطر\u0085line\u202Eoverride', 'Stale copied name', 'other']);
+    f.fail(true);
+    await f.request();
+    assert.equal(f.sent.length, 1);
+    const payload = f.sent[0];
+    assert.match(String(payload.message), /Fixture company\n• Test service\n\nOther company 👩‍💻\n• پرداخت‌کار بی‌خطر line override/);
+    assert.doesNotMatch(String(payload.message), /Stale copied name/);
+    await f.db.query('INSERT INTO services VALUES($1,$2,$3,$4,$5,$6,true,NULL)', [newService, provider, otherCompany, 'New sibling', 'Ignored copy', 'new-sibling']);
+    await f.due();
+    await f.request();
+    assert.deepEqual(JSON.parse(JSON.stringify(f.sent[1])), JSON.parse(JSON.stringify(payload)));
+    await f.db.query('UPDATE services SET is_active=false WHERE id=$1', [otherService]);
+    await f.due();
+    await f.request();
+    assert.equal(f.sent.length, 2);
+    assert.equal((await f.row()).status, 'review_required');
+  } finally {
+    await f.db.close();
+  }
 });

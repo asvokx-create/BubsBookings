@@ -6,9 +6,60 @@ import { isEmailConfigured, sendTransactionalEmail } from "./email";
 type Listing = { service_id: string; service_title: string; slug: string; user_id: string;
   business_name: string; email: string; name: string | null };
 type Payload = Parameters<typeof sendTransactionalEmail>[0];
-type Delivery = Listing & { attempt_count: number; payload: Payload | null };
+type PortfolioListing = { service_id: string; company_name: string; service_title: string };
+type StoredPayload = Payload & { portfolioServiceIds?: string[] };
+type Delivery = Listing & { attempt_count: number; payload: StoredPayload | null };
 
-export function listingActiveEmailPayload(row: Listing): Payload {
+// Bound the DB read even for unlimited plans. The extra row is an overflow
+// sentinel, never a silent truncation. Budget the actual escaped/plain text
+// contribution separately from the unchanged outer email layout and actions.
+const maxPortfolioRows = 250;
+const maxPortfolioBytes = 32 * 1024;
+function renderedPortfolioBytes(value: string) {
+  const htmlEntities: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" };
+  const html = value.replace(/[&<>'"]/g, (character) => htmlEntities[character]);
+  return Buffer.byteLength(html, "utf8") + Buffer.byteLength(value, "utf8");
+}
+// Keep character shaping (e.g. ZWJ/ZWNJ and emoji sequences), but neutralize
+// structural controls, Unicode line separators, and directional overrides.
+const cleanLine = (value: string) => value.replace(/[\s\p{Cc}\p{Bidi_Control}]+/gu, " ").trim();
+
+export function approvedPortfolioMessage(listings: PortfolioListing[]) {
+  const groups = new Map<string, string[]>();
+  for (const listing of listings) {
+    const company = cleanLine(listing.company_name);
+    const title = cleanLine(listing.service_title);
+    if (!company || !title) return "";
+    const titles = groups.get(company) ?? [];
+    titles.push(title);
+    groups.set(company, titles);
+  }
+  return ["Your public listings (including your newly published listing):",
+    ...Array.from(groups, ([company, titles]) => [company, ...titles.map(title => `• ${title}`)].join("\n")),
+  ].join("\n\n");
+}
+
+const eligiblePortfolioSql = `SELECT eligible.service_id::text AS service_id,
+    company.name AS company_name, eligible.service_title
+  FROM listing_active_email_eligible eligible
+  JOIN services service ON service.id=eligible.service_id
+  JOIN provider_companies company ON company.id=service.company_id AND company.provider_id=service.provider_id
+  WHERE eligible.user_id=$1
+    AND ($2::uuid[] IS NULL OR eligible.service_id=ANY($2::uuid[]))
+  ORDER BY lower(company.name), company.name, lower(eligible.service_title), eligible.service_title, eligible.service_id
+  LIMIT $3`;
+
+export function listingActiveEmailPayload(row: Listing, rows: PortfolioListing[] = []): StoredPayload {
+  const showPortfolio = rows.length > 1 &&
+    (rows.length > maxPortfolioRows || rows.some((listing) => listing.service_id === row.service_id));
+  const fullPortfolio = showPortfolio && rows.length <= maxPortfolioRows ? approvedPortfolioMessage(rows) : "";
+  const overflow = showPortfolio && (!fullPortfolio || renderedPortfolioBytes(fullPortfolio) > maxPortfolioBytes);
+  const portfolio = overflow
+    ? "You have more public listings than fit in this email. Open your listings to see the full list."
+    : fullPortfolio;
+  const publication = portfolio
+    ? `${row.service_title} is now public on BubsBookings.\n\n${portfolio}`
+    : `${row.service_title} from ${row.business_name} is now public on BubsBookings.`;
   const firstName = row.name?.trim().split(/\s+/)[0] || "there";
   return {
     to: row.email, userId: row.user_id, emailType: "listing_active",
@@ -16,10 +67,13 @@ export function listingActiveEmailPayload(row: Listing): Payload {
     idempotencyKey: `listing-active-${row.service_id}`,
     subject: "Your listing is now active on BubsBookings!",
     heading: `You're live, ${firstName}!`,
-    message: `${row.service_title} from ${row.business_name} is now public on BubsBookings.\n\nHead to your dashboard to keep an eye on your bookings and earnings as your business grows.\n\nDon't forget your free marketing tools! Share your listing link and QR code on social media, business cards, or flyers so customers can find your business.\n\nThanks for being part of BubsBookings. We're excited to see what you build!\n\nChristian\nFounder, BubsBookings`,
+    ...(portfolio && !overflow ? { portfolioServiceIds: rows.map((listing) => listing.service_id) } : {}),
+    message: `${publication}\n\nHead to your dashboard to keep an eye on your bookings and earnings as your business grows.\n\nDon't forget your free marketing tools! Share your listing link and QR code on social media, business cards, or flyers so customers can find your business.\n\nThanks for being part of BubsBookings. We're excited to see what you build!\n\nChristian\nFounder, BubsBookings`,
     actions: [
       { label: "View your listing", url: `/services/${encodeURIComponent(row.slug)}` },
-      { label: "Check your earnings", url: "/provider/dashboard/revenue" },
+      overflow
+        ? { label: "View all your listings", url: "/provider/dashboard/services" }
+        : { label: "Check your earnings", url: "/provider/dashboard/revenue" },
       { label: "Get your link & QR code", url: "/provider/dashboard/marketing" },
     ],
   };
@@ -62,10 +116,19 @@ export async function processListingActiveEmailQueue(batchSize = 25, serviceId?:
       const lock = await client.query<{ locked: boolean }>(
         "SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked", [lockKey]);
       if (!lock.rows[0]?.locked) { lockKey = null; await client.query("COMMIT"); break; }
-      const payload = row.payload || listingActiveEmailPayload(row);
-      if (payload.to !== row.email || payload.userId !== row.user_id
+      // Never rewrite previously attempted payloads: Resend deduplicates the
+      // exact request. A withdrawn/renamed grouped listing instead needs review.
+      const portfolioRows = !row.payload || row.payload.portfolioServiceIds
+        ? (await client.query<PortfolioListing>(eligiblePortfolioSql,
+          [row.user_id, row.payload?.portfolioServiceIds ?? null, maxPortfolioRows + 1])).rows
+        : [];
+      const payload = row.payload || listingActiveEmailPayload(row, portfolioRows);
+      const frozenPortfolioChanged = row.payload?.portfolioServiceIds &&
+        (portfolioRows.length !== row.payload.portfolioServiceIds.length ||
+          listingActiveEmailPayload(row, portfolioRows).message !== row.payload.message);
+      if (frozenPortfolioChanged || payload.to !== row.email || payload.userId !== row.user_id
           || payload.actions?.[0]?.url !== `/services/${encodeURIComponent(row.slug)}`) {
-        await client.query("UPDATE listing_active_email_deliveries SET status='review_required', last_error='Recipient or listing link changed after first attempt; review required.' WHERE service_id=$1", [row.service_id]);
+        await client.query("UPDATE listing_active_email_deliveries SET status='review_required', last_error='Recipient, listing link, or grouped portfolio changed after first attempt; review required.' WHERE service_id=$1", [row.service_id]);
         await client.query("COMMIT");
         continue;
       }
@@ -74,7 +137,10 @@ export async function processListingActiveEmailQueue(batchSize = 25, serviceId?:
         first_attempt_at=COALESCE(first_attempt_at,now()), attempted_at=now(), attempt_count=attempt_count+1
         WHERE service_id=$1`, [row.service_id, JSON.stringify(payload)]);
       await client.query("COMMIT");
-      const delivery = await sendTransactionalEmail(payload);
+      // Strip queue bookkeeping before calling the existing renderer.
+      const { portfolioServiceIds: _portfolioServiceIds, ...emailPayload } = payload;
+      void _portfolioServiceIds;
+      const delivery = await sendTransactionalEmail(emailPayload);
       processed++;
       if (delivery.sent) {
         sent++;
