@@ -5,6 +5,7 @@ import FavoriteButton from "@/components/favorite-button";
 import ProfileAvatar from "@/components/profile-avatar";
 import ServiceCategoryIcon from "@/components/service-category-icon";
 import UiIcon from "@/components/ui-icon";
+import { providerCardReviewDisplay } from "@/lib/marketplace-display";
 import { getServiceCategoryIconConfig } from "@/lib/service-category-icons";
 import { formatServicePrice, type PricingType } from "@/lib/service-pricing";
 
@@ -65,8 +66,7 @@ export default function ServiceListingCard({
   const businessHref = providerHref(service);
   const delivery = service.deliveryType === "REMOTE" ? "Online" : service.deliveryType === "BOTH" ? "Local + online" : "In person";
   const location = locationLabel || (service.deliveryType === "REMOTE" ? "Available online" : `${service.city || ""}${service.city && service.state ? ", " : ""}${service.state || ""}${typeof service.distanceMiles === "number" ? ` · ${service.distanceMiles < 0.1 ? "Nearby" : `${service.distanceMiles.toFixed(1)} mi`}` : ""}`);
-  const reviewCount = service.providerReviewCount ?? 0;
-  const rating = service.providerAverageRating;
+  const providerReview = providerCardReviewDisplay(service);
   const priceNote = service.pricingType === "QUOTE_ONLY"
     ? "custom pricing"
     : service.pricingType === "HOURLY"
@@ -88,9 +88,9 @@ export default function ServiceListingCard({
           <ProfileAvatar name={service.provider} imageUrl={service.providerProfileImageUrl} className="premium-provider-avatar" />
           <div className="min-w-0">
             {businessHref ? <Link href={businessHref}>{service.provider}</Link> : <p>{service.provider}</p>}
-            {reviewCount > 0 && rating !== null && rating !== undefined ? (
-              <p className="premium-service-rating" aria-label={`${rating.toFixed(1)} out of 5 stars from ${reviewCount} verified ${reviewCount === 1 ? "review" : "reviews"}`}><span aria-hidden="true">★</span> {rating.toFixed(1)} <small>({reviewCount})</small></p>
-            ) : <p className="premium-service-rating is-new">{service.providerStatus || "New provider"}</p>}
+            {providerReview?.kind === "rating" ? (
+              <p className="premium-service-rating" aria-label={`${providerReview.rating} out of 5 stars from ${providerReview.count} verified ${providerReview.count === 1 ? "review" : "reviews"}`}><span aria-hidden="true">★</span> {providerReview.rating} <small>({providerReview.count})</small></p>
+            ) : providerReview?.kind === "status" ? <p className="premium-service-rating is-new">{providerReview.status}</p> : null}
           </div>
         </div>
         <div className="premium-service-meta">
