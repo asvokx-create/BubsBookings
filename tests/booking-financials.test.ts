@@ -97,7 +97,7 @@ test("customer total includes the $2.99 service fee without reducing provider ne
 
 test("provider pricing discloses the separate customer service fee and processing-cost distinction", () => {
   const pricing = readFileSync(new URL("../app/pricing/page.tsx", import.meta.url), "utf8");
-  assert.match(pricing, /Customers pay a separate \$2\.99 BubsBookings service fee at checkout/);
+  assert.match(pricing, /Customers pay a separate \{money\(DEFAULT_CUSTOMER_SERVICE_FEE_CENTS\)\} BubsBookings service fee at checkout/);
   assert.match(pricing, /Stripe processing costs are separate from the BubsBookings platform fee/);
   assert.match(pricing, /no separate card-processing surcharge/);
   assert.doesNotMatch(pricing, /Platform fee examples/);

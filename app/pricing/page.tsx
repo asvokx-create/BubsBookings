@@ -7,7 +7,7 @@ import { database } from "@/lib/database";
 import { PLAN_ENTITLEMENTS, type ProviderPlan } from "@/lib/plans";
 import { getStripeMode } from "@/lib/stripe";
 import PublicSiteHeader from "@/components/public-site-header";
-import UiIcon from "@/components/ui-icon";
+import { calculateBookingFinancialSnapshot, DEFAULT_CUSTOMER_SERVICE_FEE_CENTS, providerFeeBasisPoints, providerFeeCapCents } from "@/lib/booking-financials";
 import { publicPageMetadata } from "@/lib/seo";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
 
@@ -20,25 +20,41 @@ export const metadata: Metadata = publicPageMetadata({
 const plans = [
   {
     id: "starter",
-    name: "Starter",
-    price: "$0",
-    cadence: "forever",
-    fee: "BubsBookings booking fee: 10%, with a maximum of $200 per booking",
-    description: "Everything you need to start getting booked.",
-    features: ["No lead, inquiry, message, or quote fees", "2 services with up to 5 photos", "Share links, QR codes & listing tools", "Booking calendar & customer messaging", "Customer records, booking history, private tags & notes", "Email campaigns with audience segments, branded templates & reporting", "Unsubscribe and suppression handling", "24-hour reminders & basic analytics", "Single-owner access"],
-    featured: false,
+    description: "A free monthly plan for solo providers getting started.",
+    listings: "2 services, up to 5 photos across all listings",
+    team: "1 owner seat",
+    tools: "Booking calendar, messaging, and shared client tools",
+    extras: "24-hour reminders, basic analytics, and booking links and QR codes",
   },
   {
     id: "pro",
-    name: "Pro",
-    price: "$9.99",
-    cadence: "per month",
-    fee: "BubsBookings booking fee: 6%, with a maximum of $100 per booking",
-    description: "Every growth tool in one affordable plan.",
-    features: ["Everything in Starter", "Unlimited services, photos & locations", "Custom booking questions & advanced reminders", "Advanced analytics & repeat-customer insights", "Coupon promotions & repeat-customer offers", "3 team seats included", "Extra employees for $0.50/month each", "Priority support & browse placement"],
-    featured: true,
+    description: "A lower booking fee and more tools for teams and repeat customers.",
+    listings: "Unlimited services, photos, and locations",
+    team: "3 seats included; extra seats cost $0.50 each per month",
+    tools: "Starter tools plus custom booking questions. Coupon promotions & repeat-customer offers",
+    extras: "Advanced reminders and analytics, priority support, and browse placement",
   },
 ] as const;
+
+const sharedClientTools = [
+  "Customer records, booking history, private tags & notes",
+  "Email campaigns with audience segments, branded templates & reporting",
+  "Unsubscribe and suppression handling",
+];
+
+const billingHref = "/provider/dashboard/billing";
+const money = (cents: number) => new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: cents % 100 === 0 ? 0 : 2,
+}).format(cents / 100);
+const proPrice = money(Math.round(PLAN_ENTITLEMENTS.pro.monthlyPrice * 100));
+
+// An illustration for the same two bookings, not a guarantee about monthly volume.
+const exampleBookingCents = 15_000;
+const exampleStarterCents = 2 * calculateBookingFinancialSnapshot(exampleBookingCents, "starter").providerFeeCents;
+const exampleProCents = 2 * calculateBookingFinancialSnapshot(exampleBookingCents, "pro").providerFeeCents
+  + Math.round(PLAN_ENTITLEMENTS.pro.monthlyPrice * 100);
 
 function getParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
@@ -73,66 +89,95 @@ export default async function PricingPage({ searchParams }: PageProps<"/pricing"
   const selectedPlan = plans.find((plan) => plan.id === selected);
   const currentProvider = await getCurrentProviderPlan();
   const currentPlan = currentProvider?.plan ?? null;
-  const proTrialEligible = currentProvider?.trialEligible ?? true;
-  const showTrialPromotion = proTrialEligible || currentPlan === "owner";
+  const canStartTrial = currentPlan === "starter" && currentProvider?.trialEligible === true;
+  const showPublicTrialTerms = currentPlan === null || canStartTrial;
 
   return (
     <main className="pricing-page min-h-screen bg-[#f8f7f3] text-[#183126]">
       <PublicSiteHeader />
 
-      <section className="pricing-hero relative overflow-hidden border-b border-[#183126]/10">
-        <div className="pointer-events-none absolute -right-24 -top-44 h-[620px] w-[620px] rounded-full bg-[#b7d7b8]/55 blur-3xl" />
-        <div className="pointer-events-none absolute -bottom-48 -left-36 h-[420px] w-[420px] rounded-full bg-[#eee25a]/15 blur-3xl" />
-        <div className="site-container relative grid items-center gap-10 px-5 py-12 text-left sm:px-8 sm:py-16 lg:grid-cols-[1.15fr_.85fr] lg:gap-16 lg:py-20">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[.18em] text-[#d2dfd7]">Provider pricing</p>
-            <h1 className="type-hero mt-6 max-w-3xl">Start free.<br /><span className="text-[#eee25a]">Grow on your terms.</span></h1>
-            <p className="mt-6 max-w-xl text-base leading-7 text-[#d1ddd6] sm:text-lg sm:leading-8">Build your profile, talk with customers, and send quotes without paying for leads. Upgrade only when the extra tools make sense for your business.</p>
-            <div className="mt-8 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
-              <Link href={currentPlan === "pro" ? "/provider/dashboard/billing" : "/pricing?plan=pro#plans"} className="inline-flex rounded-full bg-[#eee25a] px-7 py-4 text-base font-bold text-[#183126] shadow-[0_14px_34px_rgba(0,0,0,.18)] transition hover:bg-[#f5ea6b]">{currentPlan === "owner" ? "View the 30-day Pro trial" : currentPlan === "pro" ? "Manage your Pro plan" : "Start 30-day Pro trial"}</Link>
-              <a href="#plans" className="inline-flex min-h-11 items-center text-sm font-bold text-white underline decoration-white/35 decoration-2 underline-offset-4 transition hover:decoration-[#eee25a]">Compare plans ↓</a>
-            </div>
-          </div>
-          <aside className="relative overflow-hidden rounded-xl border border-white/20 bg-[#0b2d20] p-6 sm:p-8">
-            <p className="relative text-xs font-bold uppercase tracking-[.17em] text-[#c8d7cf]">Your cost before a booking</p>
-            <div className="relative mt-3 flex items-end gap-3"><span className="text-6xl font-bold tracking-[-.06em] text-white">$0</span><span className="pb-2 text-sm font-semibold text-[#c8d7cf]">always</span></div>
-            <div className="relative mt-6 grid gap-3">
-              {['Receive customer inquiries', 'Chat with customers', 'Create and send quotes'].map((item) => <div key={item} className="flex items-center gap-3 rounded-lg border border-white/10 px-4 py-3 text-sm font-semibold text-white"><UiIcon name="check" className="h-4 w-4 shrink-0 text-[#eee25a]" />{item}</div>)}
-            </div>
-            <p className="relative mt-5 text-sm leading-6 text-[#c8d7cf]">A booking fee applies only after you complete a paid booking.</p>
-          </aside>
-          <Link href="/guides/why-bubsbookings-does-not-charge-for-leads" className="justify-self-end text-sm font-bold text-white underline decoration-[#eee25a] decoration-2 underline-offset-4 transition hover:text-[#eee25a] lg:absolute lg:bottom-7 lg:right-8">See exactly how our fees work <span aria-hidden="true">→</span></Link>
+      <section className="pricing-hero border-b border-[#183126]/10">
+        <div className="site-container px-5 py-10 sm:px-8 sm:py-14">
+          <p className="text-xs font-bold uppercase tracking-[.18em] text-[#d2dfd7]">Provider pricing</p>
+          <h1 className="mt-3 text-4xl font-bold tracking-tight text-white sm:text-5xl">Compare provider plans</h1>
+          <p className="mt-4 max-w-xl text-base leading-7 text-[#d1ddd6]">Neither plan charges for leads, inquiries, messages, or quotes. Starter has no monthly charge.</p>
         </div>
       </section>
 
-      <section id="plans" className="site-container-wide px-4 py-12 sm:px-8 sm:py-20">
+      <section id="plans" aria-labelledby="plans-heading" className="site-container-wide scroll-mt-20 px-4 py-9 sm:px-8 sm:py-14">
         <div className="mx-auto max-w-4xl">
-        {currentPlan && <div className="mb-8 flex flex-col items-center justify-between gap-4 rounded-2xl border border-[#183126]/10 bg-[#183126] px-5 py-4 text-center text-white sm:flex-row sm:text-left"><div><p className="text-xs font-bold uppercase tracking-[.14em] text-[#b8c8c0]">Your current plan</p><p className="mt-1 text-xl font-bold">{PLAN_ENTITLEMENTS[currentPlan].name}</p>{currentPlan === "owner" && <p className="mt-1 text-xs text-[#b8c8c0]">Private account access · $0/month · 0% booking fee · all features unlocked</p>}</div><Link href="/provider/dashboard/billing" className="shrink-0 rounded-full bg-[#eee25a] px-5 py-3 text-sm font-bold text-[#183126] transition hover:bg-[#f5ea6b]">Manage billing</Link></div>}
-        {selectedPlan && <div className="mb-8 flex flex-col items-center justify-between gap-4 rounded-2xl border border-[#183126]/10 bg-[#edf3e7] px-5 py-4 text-center sm:flex-row sm:text-left"><div><p className="font-bold">{selectedPlan.name} selected</p><p className="mt-1 text-sm text-[#64766d]">{selectedPlan.id === "starter" ? "Create your provider profile for free." : proTrialEligible ? "Create your provider profile first, then start the 30-day trial from Billing through Stripe." : "Continue to Billing to subscribe through Stripe."}</p></div><Link href={selectedPlan.id === "starter" ? "/providers/join?plan=starter" : currentProvider ? "/provider/dashboard/billing" : "/providers/join?plan=pro"} className="shrink-0 rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#294b3c]">{selectedPlan.id === "starter" ? "Continue as a provider" : currentProvider ? "Continue to billing" : "Create provider profile"}</Link></div>}
-
-        <div className="grid gap-6 md:grid-cols-2">
-          {plans.map((plan) => {
-            const isCurrent = currentPlan === plan.id;
-            return <article key={plan.id} className={`pricing-plan-card relative flex flex-col rounded-[2rem] border bg-white p-7 sm:p-8 ${plan.featured || isCurrent ? "border-[#183126] ring-4 ring-[#eee25a]/60" : "border-[#183126]/10"}`}>
-            {plan.featured && <span className="absolute -top-3 left-7 rounded-md bg-[#eee25a] px-3 py-1 text-xs font-bold">Lower booking fee</span>}
-            {isCurrent && <span className="absolute -top-3 right-7 rounded-full bg-[#183126] px-3 py-1 text-xs font-bold text-white">Current plan</span>}
-            <h2 className="text-2xl font-bold">{plan.name}</h2><p className="mt-2 min-h-12 text-sm leading-6 text-[#687970]">{plan.description}</p>
-            <div className="mt-7 flex items-end gap-2"><span className="text-4xl font-bold tracking-[-.04em]">{plan.price}</span><span className="pb-1 text-sm text-[#6f7f77]">{plan.cadence}</span></div>
-            {plan.id === "pro" && showTrialPromotion && <p className="mt-3 rounded-2xl bg-[#fff9d9] px-4 py-3 text-sm font-bold text-[#66580b]">Eligible provider companies get 30 days free, then $9.99/month</p>}
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="inline-flex w-fit rounded-full bg-[#edf3e7] px-3 py-1.5 text-xs font-bold text-[#496756]">{plan.fee}</span>
-              {plan.id === "pro" && <span className="inline-flex w-fit rounded-full bg-[#183126] px-3 py-1.5 text-xs font-bold text-white">Save at $250+/month booked</span>}
+          <h2 id="plans-heading" className="mb-6 text-2xl font-bold">Starter and Pro</h2>
+          {currentPlan && (
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#183126]/10 bg-[#183126] px-5 py-4 text-white">
+              <div><p className="text-sm text-[#d8e5dd]">Your current plan</p><p className="font-bold">{PLAN_ENTITLEMENTS[currentPlan].name}</p></div>
+              <Link href={billingHref} className="inline-flex min-h-11 items-center rounded-full bg-[#eee25a] px-5 py-2 text-sm font-bold text-[#183126] hover:bg-[#f5ea6b]">Manage billing</Link>
             </div>
-            {plan.id === "pro" && <p className="mt-2 text-xs leading-5 text-[#74827b]">At $250+ in monthly bookings, Pro&apos;s lower 6% fee offsets the monthly price.</p>}
-            <ul className="mt-7 flex-1 space-y-3">{plan.features.map((feature) => <li key={feature} className="flex gap-3 text-sm"><UiIcon name="check" className="mt-0.5 h-4 w-4 shrink-0 text-[#4c8a60]" /><span>{feature}</span></li>)}</ul>
-            {isCurrent
-              ? <span className="mt-8 rounded-full bg-[#edf3e7] px-5 py-3.5 text-center text-sm font-bold text-[#496756]">Your current plan</span>
-              : plan.id === "starter"
-                ? <Link href={`/pricing?plan=${plan.id}#plans`} className="mt-8 rounded-full bg-[#183126] px-5 py-3.5 text-center text-sm font-bold text-white transition hover:bg-[#294b3c]">{selected === plan.id ? "Selected" : "Choose Starter"}</Link>
-                : <Link href="/pricing?plan=pro#plans" className="mt-8 rounded-full bg-[#eee25a] px-5 py-3.5 text-center text-sm font-bold transition hover:bg-[#f5ea6b]">{currentPlan === "owner" ? "Pro is included in Owner Plan" : proTrialEligible ? "Start 30-day free trial" : "Choose Pro for $9.99"}</Link>}
-          </article>})}
-        </div>
-        <p className="mx-auto mt-8 max-w-2xl text-center text-xs leading-5 text-[#74827b]">The Pro trial is available once per provider company and requires a card. It automatically renews at $9.99 per month after 30 days unless canceled before the trial ends. The 6% BubsBookings platform fee, capped at $100 per booking, applies during the trial. Customers pay a separate $2.99 BubsBookings service fee at checkout and no separate card-processing surcharge. Stripe processing costs are separate from the BubsBookings platform fee and are shown as final in the provider&apos;s booking record only after Stripe reports the actual cost. All subscription details are shown again in Stripe Checkout.</p>
+          )}
+          {selectedPlan && <p className="mb-5 text-sm font-semibold text-[var(--bb-text-muted)]">{PLAN_ENTITLEMENTS[selectedPlan.id].name} selected. Review the plan details below.</p>}
+
+          <div className="grid gap-5 md:grid-cols-2">
+            {plans.map((plan) => {
+              const isPro = plan.id === "pro";
+              const isCurrent = currentPlan === plan.id;
+              const details = PLAN_ENTITLEMENTS[plan.id];
+              const feeCap = providerFeeCapCents(plan.id);
+              return (
+                <article key={plan.id} aria-labelledby={"pricing-" + plan.id} className="pricing-plan-card flex min-w-0 flex-col rounded-xl border border-[#183126]/15 bg-white p-6 sm:p-7">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <h3 id={"pricing-" + plan.id} className="text-2xl font-bold">{details.name}</h3>
+                    {isCurrent && <span className="rounded-md border border-current px-2 py-1 text-xs font-bold">Current plan</span>}
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-[var(--bb-text-muted)]">{plan.description}</p>
+                  <p className="mt-4 text-3xl font-bold tracking-tight">
+                    {money(Math.round(details.monthlyPrice * 100))} <span className="text-sm font-normal text-[var(--bb-text-muted)]">per month</span>
+                  </p>
+
+                  <dl className="my-5 flex-1 space-y-3 border-y border-[var(--bb-border)] py-4 text-sm leading-6">
+                    <div><dt className="font-semibold">Booking fee</dt><dd>{providerFeeBasisPoints(plan.id) / 100}% on completed paid bookings{feeCap !== null && ", capped at " + money(feeCap) + " per booking"}</dd></div>
+                    <div><dt className="font-semibold">Listings</dt><dd>{plan.listings}</dd></div>
+                    <div><dt className="font-semibold">Team access</dt><dd>{plan.team}</dd></div>
+                    <div><dt className="font-semibold">Booking and client tools</dt><dd>{plan.tools}</dd></div>
+                    <div><dt className="font-semibold">Reminders and insights</dt><dd>{plan.extras}</dd></div>
+                  </dl>
+
+                  {isCurrent ? (
+                    <p className="text-sm font-semibold">You are on this plan.</p>
+                  ) : !isPro ? (
+                    currentPlan === null
+                      ? <Link href="/providers/join?plan=starter" className="inline-flex min-h-11 items-center justify-center rounded-full bg-[#183126] px-5 py-3 text-center text-sm font-bold text-white hover:bg-[#294b3c]">Choose Starter</Link>
+                      : null
+                  ) : currentPlan === "owner" || currentPlan === "business" ? (
+                    <p className="text-sm font-semibold">Your current plan already includes Pro tools.</p>
+                  ) : (
+                    <div>
+                      <Link href={currentPlan === null ? "/providers/join?plan=pro" : billingHref} aria-describedby="pro-payment-terms" className="inline-flex min-h-11 w-full items-center justify-center rounded-full bg-[#eee25a] px-5 py-3 text-center text-sm font-bold text-[#183126] hover:bg-[#f5ea6b]">
+                        {currentPlan === null ? "Create a provider profile for Pro" : canStartTrial ? "Continue to billing for trial" : "Choose Pro"}
+                      </Link>
+                      <p id="pro-payment-terms" className="mt-3 text-sm leading-6 text-[var(--bb-text-muted)]">
+                        {showPublicTrialTerms
+                          ? <>Eligible providers get one 30-day trial. A card is required. The plan renews at {proPrice}/month unless you cancel in Billing before the trial ends. The Pro booking fee still applies during the trial.</>
+                          : <>Pro costs {proPrice}/month and renews monthly. Cancel renewal in Billing; access continues through the current billing period.</>}
+                      </p>
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+
+          <section className="mt-6">
+            <h3 className="font-bold">Client tools included in both plans</h3>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm leading-6 text-[var(--bb-text-muted)]">
+              {sharedClientTools.map((tool) => <li key={tool}>{tool}</li>)}
+            </ul>
+          </section>
+
+          <div className="mt-6 rounded-xl border border-[var(--bb-border)] bg-[var(--bb-surface)] p-5 sm:p-6">
+            <h3 className="font-bold">What does it cost for the same bookings?</h3>
+            <p className="mt-2 text-sm leading-6 text-[var(--bb-text-muted)]">For two {money(exampleBookingCents)} completed paid bookings in one month, Starter costs {money(exampleStarterCents)}. Pro costs {money(exampleProCents)}, including its monthly subscription. This example excludes Stripe processing and any extra seats.</p>
+            <p className="mt-3 text-sm leading-6 text-[var(--bb-text-muted)]">Stripe processing costs are separate from the BubsBookings platform fee. The Stripe processing cost allocated to the service is deducted from provider earnings, varies by transaction, and is not covered by the booking fee cap. Customers pay a separate {money(DEFAULT_CUSTOMER_SERVICE_FEE_CENTS)} BubsBookings service fee at checkout, with no separate card-processing surcharge.</p>
+            <Link href="/payment-billing" className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold underline underline-offset-4">See payment and billing details</Link>
+          </div>
         </div>
       </section>
     </main>
