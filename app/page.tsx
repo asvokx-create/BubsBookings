@@ -19,6 +19,7 @@ import UiIcon from "@/components/ui-icon";
 import { getServices } from "@/lib/marketplace";
 import { getContextualLocation } from "@/lib/request-location";
 import { publicPageMetadata } from "@/lib/seo";
+import { hasMarketplaceSearchFilters, marketplaceResultsHeading } from "@/lib/marketplace-display";
 import { normalizeSearchRadius } from "@/lib/search-radius";
 import { SERVICE_CATEGORIES } from "@/lib/service-categories";
 import { deliveryLabel, type ServiceDeliveryType } from "@/lib/service-delivery";
@@ -83,6 +84,8 @@ export default async function Home({ searchParams }: PageProps<"/">) {
   const requestedSort = getParam(params.sort);
   const sort = initialDelivery === "REMOTE" && requestedSort === "nearest" ? "newest" : requestedSort || (initialDelivery === "REMOTE" ? "newest" : "nearest");
   const city = location.split(",")[0]?.trim() || "";
+  const hasSearchFilters = hasMarketplaceSearchFilters({ query, category: selectedCategory, delivery: initialDelivery, maxPrice, maxDuration });
+  const resultsHeading = marketplaceResultsHeading(hasSearchFilters, initialDelivery === "REMOTE" ? "" : city);
   const servicesWithinRange = await loadHomepageServices({ query, category: selectedCategory, delivery: initialDelivery, location, radius, maxPrice, maxDuration, sort });
   const nearbyParams = new URLSearchParams({ radius: String(radius) });
   if (location) nearbyParams.set("location", location);
@@ -168,7 +171,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
       <ListingResultsReturn resultsPath={currentResultsPath} />
       <section id="nearby-listings" className="premium-featured site-container scroll-mt-6 px-4 sm:px-6" aria-labelledby="featured-services-heading">
         <div className="premium-section-heading">
-          <div><p>Featured services</p><h2 id="featured-services-heading" tabIndex={-1}>Explore services {city ? `near ${city}` : "on BubsBookings"}.</h2></div>
+          <div><h2 id="featured-services-heading" tabIndex={-1}>{resultsHeading}</h2></div>
           <Link href={nearbyServicesHref}>Browse all services <UiIcon name="arrow-right" /></Link>
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-2" role="group" aria-label="Service delivery filter">
@@ -188,7 +191,7 @@ export default async function Home({ searchParams }: PageProps<"/">) {
           </ServiceFiltersMenu>
           <div className="ml-auto"><SortSelect value={sort} remote={initialDelivery === "REMOTE"} pathname="/" anchor="nearby-listings" /></div>
         </div>
-        {(query || selectedCategory !== "All services" || initialDelivery !== "ALL" || maxPrice || maxDuration) && <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-bold"><span className="text-[#718078]">Active filters</span>{query && <span className="rounded-full bg-[#edf3e7] px-3 py-2">{query}</span>}{selectedCategory !== "All services" && <Link href={marketplaceHref({ category: "All services" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{selectedCategory} ×</Link>}{initialDelivery !== "ALL" && <Link href={marketplaceHref({ delivery: "ALL" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{deliveryLabel(initialDelivery)} ×</Link>}{maxPrice && <Link href={marketplaceHref({ maxPrice: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Up to ${maxPrice} ×</Link>}{maxDuration && <Link href={marketplaceHref({ maxDuration: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Est. up to {maxDuration >= 240 ? maxDuration === 480 ? "full day" : "half day" : `${maxDuration / 60} hr`} ×</Link>}</div>}
+        {hasSearchFilters && <div className="mt-4 flex flex-wrap items-center gap-2 text-xs font-bold"><span className="text-[#718078]">Active filters</span>{query && <span className="rounded-full bg-[#edf3e7] px-3 py-2">{query}</span>}{selectedCategory !== "All services" && <Link href={marketplaceHref({ category: "All services" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{selectedCategory} ×</Link>}{initialDelivery !== "ALL" && <Link href={marketplaceHref({ delivery: "ALL" })} className="rounded-full bg-[#fff5b8] px-3 py-2">{deliveryLabel(initialDelivery)} ×</Link>}{maxPrice && <Link href={marketplaceHref({ maxPrice: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Up to ${maxPrice} ×</Link>}{maxDuration && <Link href={marketplaceHref({ maxDuration: undefined })} className="rounded-full bg-[#fff5b8] px-3 py-2">Est. up to {maxDuration >= 240 ? maxDuration === 480 ? "full day" : "half day" : `${maxDuration / 60} hr`} ×</Link>}</div>}
         {servicesWithinRange.length > 0 ? (
           <div className="premium-listing-grid">{servicesWithinRange.map((service) => <ServiceListingCard key={service.id} service={service} returnPath={currentResultsPath} showCategoryCover />)}</div>
         ) : (

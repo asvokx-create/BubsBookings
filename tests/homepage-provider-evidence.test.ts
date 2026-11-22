@@ -9,9 +9,9 @@ test("homepage listing cards show real provider avatars and verified review evid
   const marketplace = read("lib/marketplace.ts");
 
   assert.match(homepage, /ProfileAvatar name=\{service\.provider\} imageUrl=\{service\.providerProfileImageUrl\}/);
-  assert.match(homepage, /rating\.toFixed\(1\)/);
-  assert.match(homepage, /service\.providerReviewCount/);
-  assert.match(homepage, /New provider/);
+  assert.match(homepage, /providerCardReviewDisplay\(service\)/);
+  assert.match(homepage, /providerReview\.count\} verified/);
+  assert.doesNotMatch(homepage, /New provider/);
   assert.match(marketplace, /owner\.image AS provider_profile_image_url/);
   assert.match(marketplace, /review\.provider_id = p\.id AND review\.is_hidden = false/);
 });
