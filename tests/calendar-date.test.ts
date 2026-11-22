@@ -81,7 +81,7 @@ test("the desktop booking panel docks to its grid column without an internal scr
   assert.match(stationaryPanel, /window\.addEventListener\("scroll", syncDock, \{ passive: true \}\)/);
   assert.match(servicePage, /lg:grid-cols-\[minmax\(0,1fr\)_minmax\(20rem,25rem\)\]/);
   assert.doesNotMatch(servicePage, /data-service-detail-header/);
-  assert.match(servicePage, /<aside className="service-booking-column min-w-0">/);
+  assert.match(servicePage, /<aside[^>]*className="service-booking-column min-w-0\b[^"]*"/);
   const bookingPanelCss = globalCss.slice(globalCss.indexOf(".service-booking-column"), globalCss.indexOf(".service-detail-meta"));
   assert.doesNotMatch(bookingPanelCss, /position: sticky|top: 7rem/);
   assert.doesNotMatch(globalCss, /\.service-detail-container \{ animation: none !important; \}/);

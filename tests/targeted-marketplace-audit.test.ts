@@ -8,9 +8,10 @@ import { getServiceCategorySearchMatches } from "../lib/service-categories.ts";
 const root = process.cwd();
 const read = (file: string) => fs.readFileSync(path.join(root, file), "utf8");
 
-test("new listings omit empty photo and completed-booking metrics without hiding honest review status", () => {
+test("listings omit a redundant photo count and empty completed-booking metrics without hiding honest review status", () => {
   const listing = read("app/services/[slug]/page.tsx");
-  assert.match(listing, /service\.imageUrls\.length > 0/);
+  assert.match(listing, /<ListingPhotoGallery images=\{service\.imageUrls\}/);
+  assert.doesNotMatch(listing, /Listing \{service\.imageUrls/);
   assert.match(listing, /service\.completedJobCount > 0/);
   assert.match(listing, /No verified reviews yet/);
   assert.doesNotMatch(listing, />Completed on BubsBookings</);

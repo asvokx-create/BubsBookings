@@ -23,8 +23,9 @@ test("affiliate compensation summary explains the revenue basis in plain languag
 
 test("service details explain delivery, location, provider, and verification labels",()=>{
   const service=read("app","services","[slug]","page.tsx");
-  for(const id of ["delivery-type-help","service-map-help","service-provider-help","business-location-help","profile-screened-help","email-verified-help","business-checked-help"]){
+  for(const id of ["delivery-type-help","service-map-help","service-provider-help","profile-screened-help","email-verified-help","business-checked-help"]){
     assert.match(service,new RegExp(`id="${id}"`));
   }
+  assert.match(service, /id="service-provider-help" interactive explanation="This is the business responsible for delivering the service/);
   assert.doesNotMatch(service,/<span title="The provider/);
 });
