@@ -48,13 +48,13 @@ try {
   await pool.query(`CREATE SCHEMA ${schema}`);
   await pool.query(`CREATE TABLE "user"(id text PRIMARY KEY,email text,name text);
     CREATE TABLE provider_profiles(id uuid PRIMARY KEY,user_id text,business_name text,is_active boolean,age_verification_status text);
-    CREATE TABLE provider_companies(id uuid PRIMARY KEY,is_active boolean);
+    CREATE TABLE provider_companies(id uuid PRIMARY KEY,provider_id uuid,name text,is_active boolean);
     CREATE TABLE services(id uuid PRIMARY KEY,provider_id uuid,company_id uuid,title text,business_name text,slug text,is_active boolean,provider_deleted_at timestamptz);
     CREATE TABLE synthetic_requests(payload jsonb);
     CREATE TABLE admin_audit_log(actor_user_id text,action text,target_type text,target_id text,details jsonb);
     INSERT INTO "user" VALUES('owner','synthetic@example.invalid','Test Owner');
     INSERT INTO provider_profiles VALUES('${service}','owner','Test',true,'requires_input');
-    INSERT INTO provider_companies VALUES('${service}',true);
+    INSERT INTO provider_companies VALUES('${service}','${service}','Fixture company',true);
     INSERT INTO services VALUES('${service}','${service}','${service}','Test service','Test','test',true,NULL)`);
   const migration = fs.readFileSync('database/migrations/117_listing_active_email_queue.sql', 'utf8');
   await pool.query(migration); await pool.query(migration);
