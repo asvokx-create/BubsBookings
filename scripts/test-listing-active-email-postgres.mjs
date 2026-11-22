@@ -1,5 +1,6 @@
 // Synthetic loopback-only PostgreSQL test. Never pass a production connection.
 import fs from 'node:fs';
+import { Buffer } from 'node:buffer';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
@@ -17,7 +18,7 @@ const pool = new pg.Pool({ connectionString: url, max: 4, options: `-c search_pa
 const mode = process.argv[2];
 const service = '00000000-0000-0000-0000-000000000001';
 function load() {
-  const context = { exports: {}, require: name => {
+  const context = { Buffer, exports: {}, require: name => {
     if (name === 'server-only') return {};
     if (name === './database') return { database: pool };
     if (name === './email') return { isEmailConfigured: () => true, sendTransactionalEmail: async payload => {
@@ -88,6 +89,32 @@ try {
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM synthetic_requests')).rows[0].n, 1);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM admin_audit_log')).rows[0].n, 1);
   console.log('PASS simultaneous admin clicks and repeated request send once with one actor audit');
+  await pool.query('TRUNCATE listing_active_email_deliveries, synthetic_requests, admin_audit_log');
+  const sibling = '00000000-0000-0000-0000-000000000002';
+  const siblingCompany = '00000000-0000-0000-0000-000000000003';
+  const companyLabel = 'Zeta \u0645\u06cc\u200c\u0631\u0648\u0645';
+  const shapedTitle = 'Care \u{1F469}\u200d\u{1F4BB}';
+  await pool.query('INSERT INTO provider_companies VALUES($1,$2,$3,true)', [siblingCompany, service, companyLabel]);
+  await pool.query(
+    'INSERT INTO services VALUES($1,$2,$3,$4,$5,$6,true,NULL)',
+    [sibling, service, siblingCompany, shapedTitle + '\u2028\u202eGuide', 'Untrusted copied business name', 'sibling'],
+  );
+  await pool.query("INSERT INTO listing_active_email_deliveries(service_id,status) VALUES($1,'suppressed')", [service]);
+  const grouped = await message(child('admin-run'));
+  assert.equal(grouped.result.status, 'sent');
+  const captures = (await pool.query('SELECT payload FROM synthetic_requests')).rows;
+  assert.equal(captures.length, 1);
+  const capture = captures[0].payload;
+  assert.equal(capture.to, 'synthetic@example.invalid');
+  assert.ok(capture.message.includes('Fixture company\n• Test service'));
+  assert.ok(capture.message.includes(companyLabel + '\n• ' + shapedTitle + ' Guide'));
+  assert.doesNotMatch(capture.message, /[\u2028\u202e]|Untrusted copied business name/u);
+  assert.equal(capture.actions[0].url, '/services/test');
+  assert.equal(capture.idempotencyKey, 'listing-active-' + service);
+  assert.equal(Object.hasOwn(capture, 'portfolioServiceIds'), false);
+  const frozen = (await pool.query('SELECT payload FROM listing_active_email_deliveries WHERE service_id=$1', [service])).rows[0].payload;
+  assert.deepEqual(frozen.portfolioServiceIds, [service, sibling]);
+  console.log('PASS active second company groups with Unicode shaping preserved and structural controls removed');
   console.log('ALL REAL POSTGRESQL CHECKS PASSED', (await pool.query('SHOW server_version')).rows[0].server_version);
 } finally {
   for (const c of children) c.kill('SIGKILL');

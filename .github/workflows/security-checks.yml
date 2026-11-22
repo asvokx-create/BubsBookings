@@ -26,6 +26,19 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      listing-postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: listing_fixture
+          POSTGRES_PASSWORD: listing_fixture
+          POSTGRES_DB: listing_fixture
+        ports:
+          - "127.0.0.1:55432:5432"
+        options: >-
+          --health-cmd "pg_isready -U listing_fixture -d listing_fixture"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       BETTER_AUTH_SECRET: local-ci-validation-secret-at-least-32-characters
       DATABASE_URL: postgresql://bookme:bookme@127.0.0.1:5432/bookme
@@ -44,5 +57,9 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run test:booking-fee-migration
+      - name: Verify listing activation on isolated PostgreSQL
+        env:
+          LISTING_EMAIL_TEST_DATABASE_URL: "postgresql://listing_fixture:listing_fixture@127.0.0.1:55432/listing_fixture"
+        run: node scripts/test-listing-active-email-postgres.mjs
       - run: npm run lint
       - run: npm run build
