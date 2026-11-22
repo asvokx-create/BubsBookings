@@ -3003,6 +3003,13 @@ html[data-theme="dark"] .public-site-search:hover { background: #29352f; }
   color: #153c2e !important;
   box-shadow: 0 5px 15px rgba(13, 41, 31, .12);
 }
+.compact-service-card > .premium-service-favorite > span {
+  font-size: 1.45rem;
+  line-height: 1;
+}
+.compact-service-card > .premium-service-favorite[aria-pressed="true"] {
+  color: #ac3835 !important;
+}
 .premium-empty-state { display: grid; min-height: 18rem; place-items: center; border: 1px solid #dfe6dc; border-radius: 1.25rem; background: white; padding: 2rem; text-align: center; }
 .premium-empty-state > svg { width: 3rem; height: 3rem; }
 .premium-empty-state h3 { margin-top: .8rem; font-size: 1.4rem; font-weight: 800; }
