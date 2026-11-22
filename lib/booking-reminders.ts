@@ -9,7 +9,8 @@ export async function runBookingReminders() {
   if (!isEmailConfigured()) return { configured: false, processed: 0 };
 
   const result = await database.query<BookingEmailRow & { reminder_hours: 24 | 1; plan: ProviderPlan }>(
-    `SELECT b.id::text, s.title AS service_title, b.starts_at, b.payment_status,
+    `SELECT b.id::text, s.title AS service_title, b.starts_at, b.ends_at, b.payment_status, b.price_cents,
+            b.pricing_type_snapshot, b.hourly_rate_cents_snapshot, b.billable_duration_minutes,
             b.customer_id, customer.name AS customer_name, customer.email AS customer_email,
             COALESCE(customer_settings.booking_notifications, true) AS customer_notifications,
             p.user_id AS provider_user_id, s.business_name AS provider_name,
