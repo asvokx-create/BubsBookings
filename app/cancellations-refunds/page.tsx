@@ -21,5 +21,5 @@ const sections = [
 ] as const;
 
 export default function CancellationsRefundsPage() {
-  return <LegalPage eyebrow="Booking policies" title="Cancellation & Refund Policy" intro="How cancellation terms, refunds, disputes, and provider transfers work for a BubsBookings booking." sections={sections} />;
+  return <LegalPage currentPolicy="/cancellations-refunds" eyebrow="Booking policies" title="Cancellation & Refund Policy" intro="How cancellation terms, refunds, disputes, and provider transfers work for a BubsBookings booking." sections={sections} />;
 }

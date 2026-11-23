@@ -18,5 +18,5 @@ const sections = [
 ] as const;
 
 export default function DmcaPage() {
-  return <LegalPage eyebrow="Copyright" title="DMCA Copyright Policy" intro="How to submit a copyright notice or counter-notice about material hosted through BubsBookings." sections={sections} />;
+  return <LegalPage currentPolicy="/dmca" eyebrow="Copyright" title="DMCA Copyright Policy" intro="How to submit a copyright notice or counter-notice about material hosted through BubsBookings." sections={sections} />;
 }

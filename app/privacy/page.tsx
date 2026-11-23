@@ -29,5 +29,5 @@ const sections = [
 
 export default function PrivacyPage() {
   const numberedSections = sections.map(([heading, content], index) => [heading.replace(/^\d+\./, `${index + 1}.`), content] as const);
-  return <LegalPage effectiveDate={ADMIN_AGE_POLICY_EFFECTIVE_DATE} eyebrow="Your information" title="Privacy Policy" intro="A plain-language explanation of what BubsBookings collects, why we use it, and how automated safety checks work." sections={numberedSections} />;
+  return <LegalPage currentPolicy="/privacy" effectiveDate={ADMIN_AGE_POLICY_EFFECTIVE_DATE} eyebrow="Your information" title="Privacy Policy" intro="A plain-language explanation of what BubsBookings collects, why we use it, and how automated safety checks work." sections={numberedSections} />;
 }

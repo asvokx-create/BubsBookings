@@ -23,5 +23,5 @@ const sections = [
 ] as const;
 
 export default function PartnerAgreementPage() {
-  return <LegalPage eyebrow="Legal" title="Partner Agreement" intro="The rules for promoting BubsBookings and earning compensation for qualified provider referrals." sections={sections}/>;
+  return <LegalPage currentPolicy="/partner-agreement" eyebrow="Legal" title="Partner Agreement" intro="The rules for promoting BubsBookings and earning compensation for qualified provider referrals." sections={sections}/>;
 }

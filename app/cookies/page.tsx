@@ -20,5 +20,5 @@ const sections = [
 ] as const;
 
 export default function CookieNoticePage() {
-  return <LegalPage eyebrow="Your choices" title="Cookie Notice" intro="The browser storage and analytics tools BubsBookings currently uses, and the controls available to you." sections={sections} />;
+  return <LegalPage currentPolicy="/cookies" eyebrow="Your choices" title="Cookie Notice" intro="The browser storage and analytics tools BubsBookings currently uses, and the controls available to you." sections={sections} />;
 }

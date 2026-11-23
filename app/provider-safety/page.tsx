@@ -20,5 +20,5 @@ const sections = [
 ] as const;
 
 export default function ProviderSafetyPage() {
-  return <LegalPage effectiveDate={ADMIN_AGE_POLICY_EFFECTIVE_DATE} eyebrow="Trust and safety" title="Provider Verification & Safety" intro="The limited checks BubsBookings performs, Stripe’s separate role, and what both providers and customers remain responsible for." sections={sections} />;
+  return <LegalPage currentPolicy="/provider-safety" effectiveDate={ADMIN_AGE_POLICY_EFFECTIVE_DATE} eyebrow="Trust and safety" title="Provider Verification & Safety" intro="The limited checks BubsBookings performs, Stripe’s separate role, and what both providers and customers remain responsible for." sections={sections} />;
 }
