@@ -1,0 +1,81 @@
+name: Temporary protected browser audit
+on:
+  push:
+    branches: [audit/protected-81d4c059]
+permissions:
+  contents: read
+concurrency:
+  group: protected-audit-81d4c059
+  cancel-in-progress: false
+jobs:
+  audit:
+    if: github.repository == 'asvokx-create/BubsBookings' && github.ref == 'refs/heads/audit/protected-81d4c059' && github.event.created
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: 24.22.1
+          package-manager-cache: false
+      - name: Check exact application and prepare pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=81d4c0596470d2eed05998420da62af3afe7b713
+          test "$(git rev-parse HEAD^)" = "$base"
+          test "$(git rev-list --parents -n1 HEAD | wc -w)" = 2
+          test "$(git diff-tree --no-commit-id --name-only -r HEAD)" = $'.github/workflows/protected-browser-audit.yml\nqa/protected-audit/audit.mjs'
+          test "$(git diff-tree --no-commit-id --diff-filter=A --name-only -r HEAD | wc -l)" = 2
+          test "$(node -p 'process.versions.node')" = 24.22.1
+          d="$RUNNER_TEMP/protected-audit-input"
+          mkdir -p "$d/app" "$d/bin" "$d/pw"
+          git archive HEAD | tar -xf - -C "$d/app"
+          find "$d/app" -name '.env*' -delete
+          test ! -e "$d/app/.git"
+          test ! -e "$d/app/.npmrc"
+          cp "$(command -v node)" "$d/bin/node"
+          (
+            cd "$d/app"
+            npm ci --ignore-scripts --no-fund --no-audit
+          )
+          (
+            cd "$d/pw"
+            printf '%s\n' '{"name":"qa-pw","version":"0.0.0","private":true,"dependencies":{"playwright-core":"1.59.1"}}' > package.json
+            npm install --ignore-scripts --no-fund --no-audit --registry=https://registry.npmjs.org
+            test "$(node -p 'require("./node_modules/playwright-core/package.json").version')" = 1.59.1
+            node -e 'const p=require("./package-lock.json").packages["node_modules/playwright-core"];if(p.version!=="1.59.1"||!p.integrity?.startsWith("sha512-")||new URL(p.resolved).origin!=="https://registry.npmjs.org")process.exit(1);console.log("Playwright package integrity:",p.integrity)'
+          )
+          docker pull mcr.microsoft.com/playwright:v1.59.1-noble
+          docker pull docker.io/library/postgres:17.8-bookworm
+          docker image inspect --format '{{.Id}} {{json .RepoDigests}}' mcr.microsoft.com/playwright:v1.59.1-noble docker.io/library/postgres:17.8-bookworm > "$RUNNER_TEMP/protected-audit-images"
+          cat "$RUNNER_TEMP/protected-audit-images"
+      - name: Run exact app and Chromium inside an isolated loopback namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/protected-audit-input"
+          app_id="$(sed -n '1s/ .*//p' "$RUNNER_TEMP/protected-audit-images")"
+          pg_id="$(sed -n '2s/ .*//p' "$RUNNER_TEMP/protected-audit-images")"
+          [[ "$app_id" =~ ^sha256:[0-9a-f]{64}$ && "$pg_id" =~ ^sha256:[0-9a-f]{64}$ ]]
+          app="bubs-qa-app-$GITHUB_RUN_ID"; db="bubs-qa-db-$GITHUB_RUN_ID"
+          cleanup() { docker rm -fv "$db" "$app" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          anchor="$(docker run -d --pull never --name "$app" --network none --user pwuser --cap-drop ALL --security-opt no-new-privileges --shm-size 512m "$app_id" sleep infinity)"
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}/{{.HostConfig.Privileged}}/{{len .Mounts}}/{{len .HostConfig.PortBindings}}' "$app")" = 'none/false/0/0'
+          docker run -d --pull never --name "$db" --network "container:$anchor" --user postgres --cap-drop ALL --security-opt no-new-privileges --tmpfs /audit-pg:rw,mode=1777 \
+            -e PGDATA=/audit-pg/data -e POSTGRES_USER=qa -e POSTGRES_PASSWORD=qa-disposable-service-only -e POSTGRES_DB=qa "$pg_id" \
+            -c listen_addresses=127.0.0.1 >/dev/null
+          test "$(docker inspect -f '{{.HostConfig.NetworkMode}}/{{.HostConfig.Privileged}}/{{len .HostConfig.PortBindings}}' "$db")" = "container:$anchor/false/0"
+          docker inspect -f '{{json .Mounts}}' "$db" | python -c 'import json, sys; mounts=json.load(sys.stdin); assert all((m["Type"]=="volume" and m.get("Driver")=="local" and m["Destination"]=="/var/lib/postgresql/data") or (m["Type"]=="tmpfs" and m["Destination"]=="/audit-pg") for m in mounts)'
+          tar -C "$d" -cf - app bin pw | docker exec -i "$app" tar -xf - -C /tmp
+          docker exec -w /tmp/app "$app" env -i PATH=/tmp/bin:/usr/bin:/bin HOME=/home/pwuser \
+            PLAYWRIGHT_BROWSERS_PATH=/ms-playwright /tmp/bin/node qa/protected-audit/audit.mjs
+      - name: Cleanup disposable containers
+        if: always()
+        shell: bash
+        run: docker rm -fv "bubs-qa-db-$GITHUB_RUN_ID" "bubs-qa-app-$GITHUB_RUN_ID" >/dev/null 2>&1 || true
