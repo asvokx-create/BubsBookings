@@ -18,5 +18,5 @@ const sections = [
 ] as const;
 
 export default function ContentRemovalPage() {
-  return <LegalPage currentPolicy="/content-removal" eyebrow="Safety and rights" title="Content Removal" intro="A public, no-account-required process for reporting unlawful, infringing, privacy-invasive, or nonconsensual intimate content." sections={sections} />;
+  return <LegalPage eyebrow="Safety and rights" title="Content Removal" intro="A public, no-account-required process for reporting unlawful, infringing, privacy-invasive, or nonconsensual intimate content." sections={sections} />;
 }

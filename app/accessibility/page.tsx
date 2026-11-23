@@ -17,5 +17,5 @@ const sections = [
 ] as const;
 
 export default function AccessibilityPage() {
-  return <LegalPage currentPolicy="/accessibility" eyebrow="Access for everyone" title="Accessibility Statement" intro="How to report an accessibility barrier and request help using BubsBookings." sections={sections} />;
+  return <LegalPage eyebrow="Access for everyone" title="Accessibility Statement" intro="How to report an accessibility barrier and request help using BubsBookings." sections={sections} />;
 }

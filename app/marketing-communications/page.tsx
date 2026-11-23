@@ -19,5 +19,5 @@ const sections = [
 ] as const;
 
 export default function MarketingCommunicationsPage() {
-  return <LegalPage currentPolicy="/marketing-communications" eyebrow="Communications" title="Marketing Communications Policy" intro="How promotional emails differ from required marketplace messages, and how unsubscribe preferences work." sections={sections} />;
+  return <LegalPage eyebrow="Communications" title="Marketing Communications Policy" intro="How promotional emails differ from required marketplace messages, and how unsubscribe preferences work." sections={sections} />;
 }

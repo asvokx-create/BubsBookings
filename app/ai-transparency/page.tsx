@@ -19,5 +19,5 @@ const sections = [
 ] as const;
 
 export default function AiTransparencyPage() {
-  return <LegalPage currentPolicy="/ai-transparency" eyebrow="Trust and safety" title="Automation & AI transparency" intro="What the BubsBookings Safety Bot does, what data it uses, and where automated judgment stops." sections={sections} />;
+  return <LegalPage eyebrow="Trust and safety" title="Automation & AI transparency" intro="What the BubsBookings Safety Bot does, what data it uses, and where automated judgment stops." sections={sections} />;
 }

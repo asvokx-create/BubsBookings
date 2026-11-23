@@ -20,5 +20,5 @@ const sections = [
 ] as const;
 
 export default function PaymentBillingPage() {
-  return <LegalPage currentPolicy="/payment-billing" eyebrow="Payments and plans" title="Payment & Billing Policy" intro="A clear guide to customer charges, provider plans, Stripe processing, and marketplace transfers." sections={sections} />;
+  return <LegalPage eyebrow="Payments and plans" title="Payment & Billing Policy" intro="A clear guide to customer charges, provider plans, Stripe processing, and marketplace transfers." sections={sections} />;
 }

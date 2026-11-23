@@ -29,75 +29,10 @@ const sections = [
 ] as const;
 
 export default function TermsPage() {
-  return <LegalPage currentPolicy="/terms" eyebrow="Legal" title="Terms of Service" intro="The rules that keep BubsBookings useful, fair, and safe for customers and providers." sections={sections} />;
+  return <LegalPage eyebrow="Legal" title="Terms of Service" intro="The rules that keep BubsBookings useful, fair, and safe for customers and providers." sections={sections} />;
 }
 
-const legalPolicyGroups = [
-  {
-    "label": "Legal policies",
-    "items": [
-      [
-        "/terms",
-        "Terms"
-      ],
-      [
-        "/privacy",
-        "Privacy"
-      ],
-      [
-        "/provider-agreement",
-        "Provider Agreement"
-      ],
-      [
-        "/partner-agreement",
-        "Partner Agreement"
-      ],
-      [
-        "/ai-transparency",
-        "AI & Safety"
-      ],
-      [
-        "/cookies",
-        "Cookies"
-      ],
-      [
-        "/content-removal",
-        "Content Removal"
-      ],
-      [
-        "/accessibility",
-        "Accessibility"
-      ]
-    ]
-  },
-  {
-    "label": "Additional legal policies",
-    "items": [
-      [
-        "/cancellations-refunds",
-        "Cancellation & Refunds"
-      ],
-      [
-        "/payment-billing",
-        "Payment & Billing"
-      ],
-      [
-        "/provider-safety",
-        "Provider Safety"
-      ],
-      [
-        "/marketing-communications",
-        "Marketing Communications"
-      ],
-      [
-        "/dmca",
-        "DMCA Copyright"
-      ]
-    ]
-  }
-] as const;
-
-export function LegalPage({ currentPolicy, eyebrow, title, intro, sections, effectiveDate = POLICY_EFFECTIVE_DATE }: { currentPolicy: (typeof legalPolicyGroups)[number]["items"][number][0]; eyebrow: string; title: string; intro: string; sections: ReadonlyArray<readonly [string, string | React.ReactNode]>; effectiveDate?: string }) {
+export function LegalPage({ eyebrow, title, intro, sections, effectiveDate = POLICY_EFFECTIVE_DATE }: { eyebrow: string; title: string; intro: string; sections: ReadonlyArray<readonly [string, string | React.ReactNode]>; effectiveDate?: string }) {
   const sectionLinks = sections.map(([heading]) => ({ heading, id: `section-${heading.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")}` }));
   return <main className="legal-page min-h-screen bg-[#f8f7f3] text-[#183126]">
     <header className="border-b border-[#183126]/10 bg-[#f8f7f3]/90"><div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-4 py-4 sm:gap-3 sm:px-6"><Link href="/" aria-label="BubsBookings home"><BrandLockup compact markOnlyOnMobile /></Link><div className="flex items-center gap-1"><Link href="/guides" className="site-nav-link hidden sm:inline-flex">Guides</Link><Link href="/" className="site-nav-link">Back home</Link></div></div></header>
@@ -110,19 +45,8 @@ export function LegalPage({ currentPolicy, eyebrow, title, intro, sections, effe
         <aside className="legal-toc rounded-[1.5rem] border border-[#183126]/10 bg-white p-5 lg:sticky lg:top-24"><p className="text-xs font-bold uppercase tracking-[.14em] text-[#718078]">On this page</p><nav aria-label={`${title} sections`} className="mt-4 grid gap-1">{sectionLinks.map(({ heading, id }) => <a key={id} href={`#${id}`} className="rounded-xl px-3 py-2 text-sm font-semibold leading-5 text-[#5f7167] hover:bg-[#edf3e9] hover:text-[#183126]">{heading}</a>)}</nav></aside>
         <div className="space-y-5">{sections.map(([heading, content], index) => <section id={sectionLinks[index].id} key={heading} className="legal-section scroll-mt-28 rounded-[1.75rem] border border-[#183126]/10 bg-white p-6 sm:p-8"><h2 className="text-xl font-bold sm:text-2xl">{heading}</h2><div className="mt-4 text-[15px] leading-7 text-[#566a5f]">{content}</div></section>)}</div>
       </div>
-      {legalPolicyGroups.map(({ label, items }, index) => (
-        <nav key={label} aria-label={label} className={`${index === 0 ? "mt-10" : "mt-3"} flex flex-wrap gap-3`}>
-          {items.map(([href, text]) => {
-            const active = href === currentPolicy;
-            return (
-              <Link key={href} href={href} aria-current={active ? "page" : undefined}
-                className={`rounded-full px-5 py-3 text-sm font-bold transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#9a7420] ${active ? "bg-[#183126] text-white hover:bg-[#315846]" : "border border-[#183126]/15 bg-white hover:bg-[#e5eddf]"}`}>
-                {text}
-              </Link>
-            );
-          })}
-        </nav>
-      ))}
+      <nav aria-label="Legal policies" className="mt-10 flex flex-wrap gap-3"><Link href="/terms" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Terms</Link><Link href="/privacy" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Privacy</Link><Link href="/provider-agreement" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Provider Agreement</Link><Link href="/partner-agreement" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Partner Agreement</Link><Link href="/ai-transparency" className="rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#315846]">AI &amp; Safety</Link><Link href="/cookies" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Cookies</Link><Link href="/content-removal" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Content Removal</Link><Link href="/accessibility" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Accessibility</Link></nav>
+      <nav aria-label="Additional legal policies" className="mt-3 flex flex-wrap gap-3"><Link href="/cancellations-refunds" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Cancellation &amp; Refunds</Link><Link href="/payment-billing" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Payment &amp; Billing</Link><Link href="/provider-safety" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Provider Safety</Link><Link href="/marketing-communications" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">Marketing Communications</Link><Link href="/dmca" className="rounded-full border border-[#183126]/15 bg-white px-5 py-3 text-sm font-bold transition hover:bg-[#e5eddf]">DMCA Copyright</Link></nav>
       <p className="mt-8 text-xs leading-5 text-[#7b8982]">These pages describe the current BubsBookings service and policies. If a product screen appears inconsistent with them, contact support so BubsBookings can investigate and correct the issue.</p>
     </article>
   </main>;
