@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import SkipToContent from "@/components/skip-to-content";
 import SiteFooter from "@/components/site-footer";
+import LegalPolicyCurrent from "@/components/legal-policy-current";
+import "./legal-policy-navigation.css";
 import AnalyticsTracker from "@/components/analytics-tracker";
 import GoogleAnalytics from "@/components/google-analytics";
 import { Suspense } from "react";
@@ -68,6 +70,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           <Suspense fallback={null}><AnalyticsTracker /><InternalNavigationHistory /><AffiliateAttributionTracker /><GrowthAttributionTracker /></Suspense>
           <AnalyticsConsentPlacement>
             <div id="site-content" tabIndex={-1} className="contents">{children}</div>
+            <LegalPolicyCurrent />
             <SiteFooter />
             <AnalyticsConsentManager />
           </AnalyticsConsentPlacement>

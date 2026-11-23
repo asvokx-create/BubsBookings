@@ -1,0 +1,28 @@
+/* Navigation-only override: the versioned legal pages remain untouched. */
+.legal-page nav[aria-label="Legal policies"] > a,
+.legal-page nav[aria-label="Additional legal policies"] > a {
+  border: 1px solid #18312626 !important;
+  background: #fff !important;
+  color: #183126 !important;
+}
+.legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a:hover {
+  background: #e5eddf !important;
+}
+html[data-theme="dark"] .legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a {
+  border-color: var(--border, #64776a) !important;
+  background: var(--card, #202923) !important;
+  color: var(--text-primary, #f3f5f0) !important;
+}
+html[data-theme="dark"] .legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a:hover {
+  background: var(--card-hover, #29382f) !important;
+}
+.legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a[aria-current="page"],
+html[data-theme="dark"] .legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a[aria-current="page"] {
+  background: #183126 !important;
+  color: #fff !important;
+  border-color: #527062 !important;
+}
+.legal-page :is(nav[aria-label="Legal policies"], nav[aria-label="Additional legal policies"]) > a:focus-visible {
+  outline: 2px solid #9a7420 !important;
+  outline-offset: 2px !important;
+}
