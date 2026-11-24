@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useModalAccessibility } from "@/components/use-modal-accessibility";
 import ReportUserButton from "@/components/report-user-button";
 import UiIcon from "@/components/ui-icon";
@@ -12,6 +12,7 @@ import { analyticsAllowed } from "@/components/analytics-consent";
 import { formatDurationMinutes } from "@/lib/service-pricing";
 import BookingTip from "@/components/booking-tip";
 import { zonedDateTimeToUtc } from "@/lib/zoned-date-time";
+import { canLeaveCheckoutReview, checkoutReturnNotice, openBookingCheckout } from "@/lib/booking-checkout-feedback";
 
 type BookingStatus = "requested" | "confirmed" | "completed" | "cancelled";
 type Booking = {
@@ -90,6 +91,10 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [working, setWorking] = useState(false);
+  const checkoutLock = useRef(false);
+  const checkoutNavigating = useRef(false);
+  const [checkoutReview, setCheckoutReview] = useState(false);
+  const [checkoutReturn, setCheckoutReturn] = useState<{ payment: string | null; tip: string | null } | null>(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
   const [rating, setRating] = useState(5);
@@ -118,31 +123,42 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
   const quoteDialogRef = useModalAccessibility<HTMLDivElement>(Boolean(booking && quoteOpen && booking.viewerRole === "provider"), () => setQuoteOpen(false), working);
 
   const loadBooking = useCallback(async () => {
-    const response = await fetch(`/api/bookings/${bookingId}`, { cache: "no-store" }).catch(() => null);
-    const result = response ? await response.json() as { booking?: Booking; error?: string } : null;
+    const response = await fetch(`/api/bookings/${bookingId}`, { cache: "no-store", signal: AbortSignal.timeout(20_000) }).catch(() => null);
+    const result = response ? await response.json().catch(() => null) as { booking?: Booking; error?: string } | null : null;
     if (!response?.ok || !result?.booking || (expectedRole === "customer" ? result.booking.viewerRole !== "customer" : result.booking.viewerRole === "customer")) {
       setError(result?.error ?? "We could not load this booking.");
       setLoading(false);
-      return;
+      return null;
     }
     setBooking(result.booking);
     setLoading(false);
+    return result.booking;
   }, [bookingId, expectedRole]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadBooking();
-      if (new URLSearchParams(window.location.search).get("reschedule") === "1") setRescheduleOpen(true);
-      if (new URLSearchParams(window.location.search).get("payment") === "success") setNotice("Payment submitted through Stripe. Your receipt and payment status will appear after confirmation.");
-      if (new URLSearchParams(window.location.search).get("tip") === "success") setNotice("Tip submitted through Stripe. Your receipt will update after payment confirmation.");
-      if (new URLSearchParams(window.location.search).get("tip") === "cancelled") setNotice("Tip checkout was cancelled. Nothing was charged.");
-      if (new URLSearchParams(window.location.search).get("payment") === "cancelled") {
-        setNotice("Payment checkout was cancelled. Nothing was charged.");
+      const query = new URLSearchParams(window.location.search);
+      if (query.get("reschedule") === "1") setRescheduleOpen(true);
+      if (expectedRole === "customer") setCheckoutReturn({ payment: query.get("payment"), tip: query.get("tip") });
+      if (query.get("payment") === "cancelled") {
         if (analyticsAllowed()) void fetch("/api/analytics", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ eventName: "checkout_abandoned", path: window.location.pathname, metadata: { bookingId } }) });
       }
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [bookingId, loadBooking]);
+  }, [bookingId, expectedRole, loadBooking]);
+
+  useEffect(() => {
+    const recoverCheckoutOnBack = (event: PageTransitionEvent) => {
+      if (!event.persisted || !checkoutNavigating.current) return;
+      checkoutNavigating.current = false;
+      checkoutLock.current = false;
+      setCheckoutReview(true);
+      setWorking(false);
+    };
+    window.addEventListener("pageshow", recoverCheckoutOnBack);
+    return () => window.removeEventListener("pageshow", recoverCheckoutOnBack);
+  }, []);
 
   useEffect(() => {
     if (!rescheduleOpen || !rescheduleDate || !booking || booking.hourlyProjectId) return;
@@ -239,15 +255,48 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
   }
 
   async function payForBooking() {
+    if (checkoutLock.current || working || checkoutReview) return;
+    checkoutLock.current = true;
     setWorking(true); setError(""); setNotice("");
-    const response = await fetch(`/api/stripe/bookings/${bookingId}/checkout`, { method: "POST" }).catch(() => null);
-    const result = response ? await response.json() as { url?: string; error?: string } : null;
-    if (!response?.ok || !result?.url) {
-      setError(result?.error ?? "We could not open Stripe checkout.");
-      setWorking(false);
-      return;
+    let redirected = false;
+    try {
+      const result = await openBookingCheckout(
+        () => fetch(`/api/stripe/bookings/${bookingId}/checkout`, { method: "POST", signal: AbortSignal.timeout(20_000) }),
+        (url) => {
+          checkoutNavigating.current = true;
+          window.location.assign(url);
+        },
+      );
+      redirected = result.redirected;
+      if (!redirected) {
+        setCheckoutReview(true);
+        setError(result.error ?? "We could not confirm that secure checkout opened. Check payment status below before continuing.");
+      }
+    } finally {
+      if (!redirected) {
+        checkoutNavigating.current = false;
+        checkoutLock.current = false;
+        setWorking(false);
+      }
     }
-    window.location.assign(result.url);
+  }
+
+  async function checkPaymentStatus() {
+    if (checkoutLock.current || working) return;
+    checkoutLock.current = true;
+    setWorking(true); setError("");
+    try {
+      const fresh = await loadBooking();
+      if (fresh && canLeaveCheckoutReview(fresh.paymentStatus, checkoutReturn?.payment)) {
+        setCheckoutReview(false);
+        if (fresh.paymentStatus === "unpaid" || fresh.paymentStatus === "failed") {
+          setCheckoutReturn((current) => current ? { ...current, payment: null } : current);
+        }
+      }
+    } finally {
+      checkoutLock.current = false;
+      setWorking(false);
+    }
   }
 
   async function requestDurationChange(event: FormEvent) {
@@ -373,6 +422,13 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
   const canCancel = !booking.hourlyProjectId && (booking.status === "requested" || booking.status === "confirmed");
   const canComplete = !booking.hourlyProjectId && booking.viewerRole === "provider" && booking.status === "confirmed" && booking.paymentStatus === "paid";
   const releaseCopy = paymentReleaseCopy(booking, timeZone);
+  const paymentReturnNotice = booking.viewerRole === "customer" && !booking.hourlyProjectId
+    ? checkoutReturnNotice("Payment", checkoutReturn?.payment, booking.paymentStatus)
+    : null;
+  const tipReturnNotice = booking.viewerRole === "customer"
+    ? checkoutReturnNotice("Tip", checkoutReturn?.tip, booking.tip.status)
+    : null;
+  const showPaymentCheck = checkoutReview || (checkoutReturn?.payment === "success" && Boolean(paymentReturnNotice));
   const postedTip = ["paid", "refunded", "partially_refunded", "disputed"].includes(booking.tip.status) ? booking.tip.amount : 0;
   const customerPaymentTotal = booking.price + booking.customerServiceFee + postedTip;
   const processingFeeIsFinal = booking.paymentRelease.processingFeeStatus === "final";
@@ -394,6 +450,8 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
   return <>
     {booking.hourlyProjectId && <section className="mb-5 rounded-2xl border border-[#183126]/15 bg-[#edf3e7] p-5"><p className="text-xs font-bold uppercase tracking-wider">Hourly project payment record</p><h2 className="mt-2 text-xl font-bold">Approved final timesheet</h2><p className="mt-2 text-sm leading-6">This record settles completed project work. It is not a scheduled appointment. Review the approved time entries and payment status in your project.</p><Link className="mt-3 inline-block font-bold underline underline-offset-4" href={`${booking.viewerRole === "customer" ? "/account/projects" : "/provider/dashboard/projects"}/${booking.hourlyProjectId}`}>View hourly project and final timesheet</Link></section>}
     {notice && <p role="status" className="mb-5 rounded-2xl bg-[#e6f2e6] px-5 py-4 text-sm font-semibold text-[#34704a]">{notice}</p>}
+    {paymentReturnNotice && <p role="status" className="mb-5 rounded-2xl bg-[#fff8cd] px-5 py-4 text-sm font-semibold text-[#6f642d]">{paymentReturnNotice}</p>}
+    {tipReturnNotice && <p role="status" className="mb-5 rounded-2xl bg-[#fff8cd] px-5 py-4 text-sm font-semibold text-[#6f642d]">{tipReturnNotice}</p>}
     {error && <p role="alert" className="mb-5 rounded-2xl bg-[#fff0e8] px-5 py-4 text-sm font-semibold text-[#964f2c]">{error}</p>}
     <div className="grid gap-6 lg:grid-cols-[1fr_340px]">
       <div className="space-y-5">
@@ -432,7 +490,7 @@ export default function BookingDetails({ bookingId, expectedRole }: { bookingId:
           <div className="mt-5 grid gap-3">
             {booking.viewerRole === "worker" && <p className="rounded-2xl bg-[#edf2e8] p-4 text-sm leading-6 text-[#52665b]">This is an assigned company job. The company owner manages customer messages, booking changes, and payments.</p>}
             {booking.viewerRole !== "worker" && <Link href={contactHref} className="inline-flex items-center justify-center gap-2 rounded-full bg-[#eee25a] px-5 py-3 text-center text-sm font-bold transition hover:bg-[#e1d43d]"><UiIcon name="mail" className="h-4 w-4" />Contact {booking.viewerRole === "customer" ? "provider" : "customer"}</Link>}
-            {!booking.hourlyProjectId && booking.viewerRole === "customer" && booking.status === "confirmed" && booking.paymentStatus !== "paid" && booking.paymentStatus !== "refunded" && <div className="rounded-2xl border border-[#183126]/10 bg-[#f7f8f3] p-4"><p className="mb-3 font-bold">Pay before your appointment</p><div className="space-y-2 text-sm"><div className="flex justify-between gap-4 text-[#61736a]"><span>Service</span><span>${booking.price.toFixed(2)}</span></div><div className="flex justify-between gap-4 text-[#61736a]"><span>BubsBookings service fee</span><span>${booking.customerServiceFee.toFixed(2)}</span></div><div className="flex justify-between gap-4 border-t border-[#183126]/10 pt-2 font-bold"><span>Total due at checkout</span><span>${customerPaymentTotal.toFixed(2)}</span></div></div><button disabled={working} onClick={() => void payForBooking()} className="mt-4 w-full rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#315846] disabled:opacity-50">{working ? "Opening Stripe…" : `Pay $${customerPaymentTotal.toFixed(2)} securely`}</button><p className="mt-2 text-center text-xs leading-5 text-[#7b8982]">You are charged only when you complete payment in Stripe. Review the <Link href="/cancellations-refunds" className="font-bold underline">Cancellation &amp; Refund Policy</Link> and <Link href="/payment-billing" className="font-bold underline">Payment &amp; Billing Policy</Link>.</p></div>}
+            {!booking.hourlyProjectId && booking.viewerRole === "customer" && booking.status === "confirmed" && booking.paymentStatus !== "paid" && booking.paymentStatus !== "refunded" && <div className="rounded-2xl border border-[#183126]/10 bg-[#f7f8f3] p-4"><p className="mb-3 font-bold">{showPaymentCheck || booking.paymentStatus === "pending" ? "Booking payment" : "Pay before your appointment"}</p><div className="space-y-2 text-sm"><div className="flex justify-between gap-4 text-[#61736a]"><span>Service</span><span>${booking.price.toFixed(2)}</span></div><div className="flex justify-between gap-4 text-[#61736a]"><span>BubsBookings service fee</span><span>${booking.customerServiceFee.toFixed(2)}</span></div><div className="flex justify-between gap-4 border-t border-[#183126]/10 pt-2 font-bold"><span>{showPaymentCheck || booking.paymentStatus === "pending" ? "Checkout total" : "Total due at checkout"}</span><span>${customerPaymentTotal.toFixed(2)}</span></div></div><button disabled={working} onClick={() => void (showPaymentCheck ? checkPaymentStatus() : payForBooking())} className="mt-4 w-full rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#315846] disabled:opacity-50">{showPaymentCheck ? (working ? "Checking payment status…" : "Check payment status") : working ? "Opening Stripe…" : booking.paymentStatus === "pending" ? "Continue to secure checkout" : `Pay $${customerPaymentTotal.toFixed(2)} securely`}</button><p className="mt-2 text-center text-xs leading-5 text-[#7b8982]">{showPaymentCheck ? "Check your booking before opening checkout again. If payment is still pending, check again later or contact support. " : "Payment is completed through Stripe. "}Review the <Link href="/cancellations-refunds" className="font-bold underline">Cancellation &amp; Refund Policy</Link> and <Link href="/payment-billing" className="font-bold underline">Payment &amp; Billing Policy</Link>.</p></div>}
             {!booking.hourlyProjectId && booking.viewerRole === "provider" && booking.status === "confirmed" && booking.paymentStatus !== "paid" && <p className="rounded-2xl bg-[#fff8cd] p-4 text-sm font-semibold text-[#6f642d]">Waiting for secure customer payment. You can mark the job complete after payment succeeds.</p>}
             {booking.paymentStatus === "paid" && <div className="rounded-2xl bg-[#e6f2e6] px-4 py-3 text-center text-sm font-bold text-[#34704a]">✓ {releaseCopy.label}</div>}
             {booking.viewerRole === "customer" && (booking.paymentRelease.status === "awaiting_customer" || (booking.paymentRelease.status === "failed" && Boolean(booking.paymentRelease.customerConfirmedAt))) && <button disabled={working} onClick={() => void confirmCompletion()} className="rounded-full bg-[#183126] px-5 py-3 text-sm font-bold text-white transition hover:bg-[#315846] disabled:opacity-50">{working ? "Releasing payout…" : booking.paymentRelease.status === "failed" ? "Retry payout release" : "Confirm service complete"}</button>}

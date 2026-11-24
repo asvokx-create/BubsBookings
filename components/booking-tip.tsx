@@ -48,6 +48,7 @@ export default function BookingTip({ bookingId, serviceSubtotal, tip, eligible }
   }
 
   const statusCopy = useMemo(() => {
+    if (tip.status === "pending") return "Tip payment is awaiting confirmation";
     if (tip.status === "paid") return tip.transferStatus === "paid_out" ? "Tip paid to provider" : "Tip payment received";
     if (tip.status === "partially_refunded") return "Tip partially refunded";
     if (tip.status === "refunded") return "Tip refunded";
@@ -59,7 +60,7 @@ export default function BookingTip({ bookingId, serviceSubtotal, tip, eligible }
   if (!eligible && tip.status === "none") return null;
 
   return <section className="mt-6 rounded-[2rem] border border-[#183126]/10 bg-white p-6 sm:p-8"><p className="text-xs font-bold uppercase tracking-[.13em] text-[#718078]">Optional</p><h2 className="mt-2 text-2xl font-bold">Add a tip</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-[#61736a]">Thank your provider if you&apos;d like. 100% of your tip goes to your provider; BubsBookings covers payment processing costs.</p>
-    {tip.status !== "none" && <p className="mt-4 rounded-2xl bg-[#fff5d5] p-4 text-sm font-semibold text-[#72632b]">{statusCopy}{tip.failureReason ? `: ${tip.failureReason}` : ". You can try again when you are ready."}</p>}
+    {tip.status !== "none" && <p className="mt-4 rounded-2xl bg-[#fff5d5] p-4 text-sm font-semibold text-[#72632b]">{statusCopy}{tip.status === "pending" ? ". Check this booking again later for an update." : tip.failureReason ? `: ${tip.failureReason}` : ". You can try again when you are ready."}</p>}
     <div className="mt-5 grid gap-3 min-[390px]:grid-cols-3" role="group" aria-label="Tip amount">
       {TIP_PERCENTAGES.map((option) => { const selected = selection === "percentage" && percentage === option; const amount = Math.round(subtotalCents * option / 100); return <button key={option} type="button" aria-pressed={selected} onClick={() => { setSelection("percentage"); setPercentage(option); setCustom(""); setHighTipConfirmed(false); setError(""); }} className={`rounded-2xl border p-4 text-left transition focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#eee25a]/60 ${selected ? "border-[#183126] bg-[#e7eee2]" : "border-[#183126]/15 bg-[#fafaf6] hover:bg-[#f1f5ee]"}`}><span className="block text-lg font-bold">{option}%</span><span className="mt-1 block text-sm text-[#61736a]">{dollarsFromCents(amount)}</span></button>; })}
     </div>
