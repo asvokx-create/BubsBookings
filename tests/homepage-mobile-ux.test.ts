@@ -118,3 +118,34 @@ test("mobile footer link groups are collapsed without hiding desktop navigation"
   assert.match(css, /\.site-footer-mobile-group \{ display: block/);
   assert.match(css, /\.site-footer-desktop-group \{ display: none/);
 });
+
+test("mobile location picker escapes the sticky header and follows the visual viewport", () => {
+  const search = read("components", "home-service-search.tsx");
+  const picker = read("components", "location-filter.tsx");
+  const css = read("app", "globals.css");
+
+  assert.match(search, /<LocationFilter\b/);
+  assert.match(picker, /PHONE_PICKER_QUERY = "\(max-width: 639px\)"/);
+  assert.match(picker, /dialog\.showModal\(\)/);
+  assert.match(picker, /aria-labelledby=\{\x60\$\{pickerId\}-title\x60\}/);
+  assert.match(picker, /viewport\?\.addEventListener\("resize", syncViewport\)/);
+  assert.match(picker, /viewport\?\.addEventListener\("scroll", syncViewport\)/);
+  assert.match(css, /\.location-picker-sheet\[open\] \{[^}]*position: fixed;[^}]*height: var\(--location-viewport-height, 100vh\);[^}]*safe-area-inset-top/);
+  assert.match(css, /\.location-picker-scroll \{[^}]*max-height: 100%;[^}]*overflow-y: auto;[^}]*overscroll-behavior-y: contain;[^}]*touch-action: pan-y pinch-zoom/);
+  assert.match(css, /body:has\(\.location-picker-sheet\[open\]\) \{[^}]*overflow: hidden/);
+  assert.match(picker, /sm:absolute sm:inset-x-auto sm:left-0 sm:top-full/);
+});
+
+test("mobile location picker dismisses explicitly, not while scrolling, and restores focus", () => {
+  const picker = read("components", "location-filter.tsx");
+
+  assert.match(picker, /if \(dialogRef\.current\?\.open \|\| !details\?\.open/);
+  assert.match(picker, /onPointerMove=\{\(event\) => \{[\s\S]*?Math\.hypot[\s\S]*?> 8\) backdropPressRef\.current = null/);
+  assert.match(picker, /onPointerCancel=\{\(\) => \{ backdropPressRef\.current = null;/);
+  assert.match(picker, /if \(wasBackdropTap && event\.target === event\.currentTarget\) closePicker\(\)/);
+  assert.match(picker, /onCancel=\{\(event\) => \{ event\.preventDefault\(\); closePicker\(\);/);
+  assert.match(picker, /aria-label="Close location picker"/);
+  assert.match(picker, /closeButtonRef\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(picker, /querySelector\("summary"\)\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(picker, /function chooseLocation[\s\S]*?remember\(nextLocation, radius\);[\s\S]*?closePicker\(\);[\s\S]*?navigateToLocation\(nextLocation, radius\)/);
+});
