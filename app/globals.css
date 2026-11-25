@@ -4615,3 +4615,53 @@ html[data-theme="dark"] .home-analytics-inline-panel {
 @media (min-width: 460px) {
   .home-analytics-inline-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Location picker: the phone sheet is a native top-layer dialog, so neither
+   the homepage's sticky header nor its transformed search card can cover it. */
+.location-picker-sheet[open] {
+  position: fixed;
+  inset: auto;
+  top: var(--location-viewport-top, 0px);
+  left: var(--location-viewport-left, 0px);
+  width: var(--location-viewport-width, 100vw);
+  height: var(--location-viewport-height, 100vh);
+  max-width: none;
+  max-height: none;
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  padding: max(.75rem, env(safe-area-inset-top)) max(.75rem, env(safe-area-inset-right)) max(.75rem, env(safe-area-inset-bottom)) max(.75rem, env(safe-area-inset-left));
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+  background: transparent;
+  color: #183126;
+  overscroll-behavior: contain;
+}
+.location-picker-sheet::backdrop { background: rgba(7, 27, 19, .40); }
+.location-picker-scroll {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y pinch-zoom;
+}
+.location-picker-scroll input {
+  /* Avoid automatic Safari keyboard zoom; pinch zoom remains available. */
+  font-size: 1rem;
+  scroll-margin-block: .75rem;
+}
+html:has(.location-picker-sheet[open]),
+body:has(.location-picker-sheet[open]) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+html[data-theme="dark"] .location-picker-scroll {
+  background-color: var(--modal) !important;
+  color: var(--text-primary);
+  border-color: var(--border) !important;
+}
