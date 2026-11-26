@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { projectCapMinutes } from "../components/hourly-project-cap.ts";
 import { liveProjectSeconds } from "../components/hourly-project-display.ts";
 const source = readFileSync(new URL("../components/hourly-projects.tsx", import.meta.url), "utf8");
 test("live estimates use whole seconds, without billing the next minute early", () => {
@@ -44,4 +45,21 @@ test("project settlements link to their timesheet and suppress appointment actio
 test("unpaid hourly settlements cannot show a new verified review form", () => {
   const booking = readFileSync(new URL("../components/booking-details.tsx", import.meta.url), "utf8");
   assert.ok(booking.includes('(booking.review || !booking.hourlyProjectId || ["paid", "refunded"].includes(booking.paymentStatus))'));
+});
+
+test("hours and minutes preserve the existing approved work cap", () => {
+  assert.equal(projectCapMinutes("1", "30"), 90);
+  assert.equal(projectCapMinutes("", "30"), 30);
+  assert.equal(projectCapMinutes("2", ""), 120);
+  assert.equal(projectCapMinutes("1000", "0"), 60000);
+  for (const [h, m] of [["", ""], ["0", "0"], ["1", "60"], ["1000", "1"], ["-1", "30"], ["1.5", "0"], ["1e2", "0"], ["0", "0.5"]]) {
+    assert.equal(projectCapMinutes(h, m), null);
+  }
+  const request = readFileSync(new URL("../components/hourly-project-request.tsx", import.meta.url), "utf8");
+  assert.match(request, /Maximum approved work time/);
+  assert.match(request, /Hours<input/);
+  assert.match(request, /Minutes<input/);
+  assert.match(request, /capMinutes: cap/);
+  assert.match(request, /if \(cap === null\)/);
+  assert.match(request, /aria-live="polite"/);
 });
