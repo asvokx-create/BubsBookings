@@ -4,6 +4,8 @@ import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { SERVICE_CATEGORIES } from "@/lib/service-categories";
+import HourlyEstimateFields from "@/components/hourly-estimate-fields";
+import { parseHourlyEstimateInputs, type HourlyListingEstimate } from "@/lib/hourly-listing-estimate";
 import BackButton from "@/components/back-button";
 import CustomSelect from "@/components/custom-select";
 import { deliveryLabel, type ServiceDeliveryType } from "@/lib/service-delivery";
@@ -26,6 +28,8 @@ type Listing = {
   durationMinutes: number;
   pricingType: PricingType;
   hourlyRate: number | null;
+  estimatedMinMinutes: number | null;
+  estimatedMaxMinutes: number | null;
   minimumDurationMinutes: number | null;
   maximumDurationMinutes: number | null;
   billingIncrementMinutes: 15 | 30 | 60 | null;
@@ -53,6 +57,8 @@ export default function ListingEditor({ serviceId }: { serviceId: string }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [estimateShorter, setEstimateShorter] = useState("");
+  const [estimateLonger, setEstimateLonger] = useState("");
   const [durationAmount, setDurationAmount] = useState("2");
   const [durationUnit, setDurationUnit] = useState<"hours" | "days">("hours");
 
@@ -65,6 +71,8 @@ export default function ListingEditor({ serviceId }: { serviceId: string }) {
         if (active) {
           const unit = result.durationMinutes >= 1440 && result.durationMinutes % 1440 === 0 ? "days" : "hours";
           setListing(result);
+          setEstimateShorter(result.estimatedMinMinutes == null ? "" : String(result.estimatedMinMinutes));
+          setEstimateLonger(result.estimatedMaxMinutes == null ? "" : String(result.estimatedMaxMinutes));
           setDurationUnit(unit);
           setDurationAmount(String(result.durationMinutes / (unit === "days" ? 1440 : 60)));
         }
@@ -86,12 +94,17 @@ export default function ListingEditor({ serviceId }: { serviceId: string }) {
       setError("Enter a valid hourly rate ($0.50–$100,000).");
       return;
     }
+    let estimate: HourlyListingEstimate = { estimatedMinMinutes: null, estimatedMaxMinutes: null };
+    if (listing.pricingType === "HOURLY") {
+      try { estimate = parseHourlyEstimateInputs(estimateShorter, estimateLonger); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : "Check the estimated duration."); return; }
+    }
     setSaving(true);
     setError("");
     const response = await fetch(`/api/providers/services/${serviceId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(listing),
+      body: JSON.stringify({ ...listing, ...estimate }),
     });
     const result = (await response.json()) as { error?: string };
     setSaving(false);
@@ -142,7 +155,7 @@ export default function ListingEditor({ serviceId }: { serviceId: string }) {
             {listing.pricingType === "QUOTE_ONLY" ? <div className="grid gap-4 rounded-[1.5rem] bg-[#edf3e7] p-5 sm:grid-cols-2"><div><p className="text-sm font-bold">Personalized pricing</p><p className="mt-1 text-xs leading-5 text-[#65776d]">No price will appear publicly or be used at checkout until the customer accepts your quote.</p></div><label className="block"><span className="mb-2 block text-sm font-bold">Estimated job duration</span><div className="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-2"><input aria-label="Estimated job duration" type="number" min={durationUnit === "hours" ? "0.25" : "0.01"} step={durationUnit === "hours" ? "0.25" : "0.01"} value={durationAmount} onChange={(event) => { const amount = event.target.value; setDurationAmount(amount); change("durationMinutes", Math.round(Number(amount) * (durationUnit === "days" ? 1440 : 60))); }} className={`${inputClass} bg-white`} /><CustomSelect ariaLabel="Duration unit" value={durationUnit} onChange={(value) => { const unit = value as "hours" | "days"; setDurationUnit(unit); change("durationMinutes", Math.round(Number(durationAmount) * (unit === "days" ? 1440 : 60))); }} buttonClassName={`${inputClass} bg-white`}><option value="hours">Hours</option><option value="days">Days</option></CustomSelect></div></label></div> : listing.pricingType === "FIXED" ? <div className="grid gap-4 sm:grid-cols-2">
               <label className="block"><span className="mb-2 block text-sm font-bold">Starting price</span><div className="relative"><span className="absolute left-4 top-3.5 text-sm text-[#65766d]">$</span><input type="number" min="1" step="0.01" value={listing.price} onChange={(event) => change("price", Number(event.target.value))} className={`${inputClass} pl-8`} /></div></label>
               <label className="block"><span className="mb-2 block text-sm font-bold">Estimated job duration</span><div className="grid grid-cols-[minmax(0,1fr)_7.5rem] gap-2"><input aria-label="Estimated job duration" type="number" min={durationUnit === "hours" ? "0.25" : "0.01"} step={durationUnit === "hours" ? "0.25" : "0.01"} value={durationAmount} onChange={(event) => { const amount = event.target.value; setDurationAmount(amount); change("durationMinutes", Math.round(Number(amount) * (durationUnit === "days" ? 1440 : 60))); }} className={inputClass} /><CustomSelect ariaLabel="Duration unit" value={durationUnit} onChange={(value) => { const unit = value as "hours" | "days"; setDurationUnit(unit); change("durationMinutes", Math.round(Number(durationAmount) * (unit === "days" ? 1440 : 60))); }} buttonClassName={inputClass}><option value="hours">Hours</option><option value="days">Days</option></CustomSelect></div><span className="mt-2 block text-xs font-normal leading-5 text-[#75837c]">This reserves calendar availability. Actual time and the approved billable amount remain separate.</span></label>
-            </div> : <section className="rounded-[1.5rem] bg-[#f5f7f2] p-5"><h2 className="text-sm font-bold">Tracked hourly projects</h2><label className="mt-4 block"><span className="mb-2 block text-sm font-bold">Hourly rate ($)</span><input required type="number" min="0.50" max={MAX_HOURLY_RATE_CENTS / 100} step="0.01" value={listing.hourlyRate ?? ""} onChange={event => change("hourlyRate", Number(event.target.value))} className={`${inputClass} bg-white`} /></label>{hourlyPreview === null && <p role="alert" className="mt-3 text-sm font-bold text-[#9b4934]">Enter a valid hourly rate ($0.50–$100,000).</p>}{hourlyPreview !== null && <p aria-live="polite" className="mt-3 text-sm font-bold">Rate preview: ${(hourlyPreview / 100).toFixed(2)}/hr. Final payment is based on the approved timesheet.</p>}<p className="mt-4 text-sm leading-6">The rate is locked when a customer requests a project. Customers approve a maximum work limit, not prepaid hours. Track actual work, submit one final timesheet, and receive payment after customer review. Work is billed by the aggregate minute with no minimum duration or old booking increments.</p><p className="mt-3 text-xs leading-5 text-[#718078]">Rate changes apply only to new projects. Existing bookings and projects keep their agreed pricing. Recurring visits, packages and add-ons are not part of hourly projects.</p></section>}
+            </div> : <section className="rounded-[1.5rem] bg-[#f5f7f2] p-5"><h2 className="text-sm font-bold">Tracked hourly projects</h2><label className="mt-4 block"><span className="mb-2 block text-sm font-bold">Hourly rate ($)</span><input required type="number" min="0.50" max={MAX_HOURLY_RATE_CENTS / 100} step="0.01" value={listing.hourlyRate ?? ""} onChange={event => change("hourlyRate", Number(event.target.value))} className={`${inputClass} bg-white`} /></label>{hourlyPreview === null && <p role="alert" className="mt-3 text-sm font-bold text-[#9b4934]">Enter a valid hourly rate ($0.50–$100,000).</p>}{hourlyPreview !== null && <p aria-live="polite" className="mt-3 text-sm font-bold">Rate preview: ${(hourlyPreview / 100).toFixed(2)}/hr. Final payment is based on the approved timesheet.</p>}<HourlyEstimateFields shorter={estimateShorter} longer={estimateLonger} onShorter={value => { setEstimateShorter(value); setSaved(false); }} onLonger={value => { setEstimateLonger(value); setSaved(false); }} inputClass={inputClass} /><p className="mt-4 text-sm leading-6">The rate is locked when a customer requests a project. Customers approve a maximum work limit, not prepaid hours. Track actual work, submit one final timesheet, and receive payment after customer review. Work is billed by the aggregate minute with no minimum duration or old booking increments.</p><p className="mt-3 text-xs leading-5 text-[#718078]">Rate changes apply only to new projects. Existing bookings and projects keep their agreed pricing. Recurring visits, packages and add-ons are not part of hourly projects.</p></section>}
             {listing.deliveryType !== "REMOTE" && <label className="block"><span className="mb-2 block text-sm font-bold">Service location</span><CustomSelect ariaLabel="Service location" searchable required value={listing.locationId ?? ""} disabled={!listing.multipleLocationsAllowed && Boolean(listing.locationId)} onChange={(value) => { const selected = listing.locations.find((item) => item.id === value); change("locationId", value); if (selected) { change("location", selected.location); change("locationName", selected.name); } }} buttonClassName={`${inputClass} disabled:cursor-not-allowed disabled:bg-[#eef1eb]`}><option value="">Choose a service location</option>{listing.locations.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.location}</option>)}</CustomSelect><span className="mt-2 block text-xs text-[#849189]">{listing.multipleLocationsAllowed ? <>Manage branches and worker coverage from <Link href="/provider/dashboard/locations" className="font-bold underline">Service locations</Link>.</> : "This listing uses your primary location. Pro unlocks multiple locations."}</span></label>}
             <label className="block"><span className="mb-2 block text-sm font-bold">Description</span><textarea rows={6} value={listing.description} onChange={(event) => change("description", event.target.value)} className={`${inputClass} resize-none`} /></label>
             {listing.deliveryType !== "IN_PERSON" && <label className="block"><span className="mb-2 block text-sm font-bold">How remote delivery works <span className="font-normal text-[#849189]">(optional)</span></span><textarea rows={3} maxLength={1000} value={listing.remoteDeliveryDetails} onChange={(event) => change("remoteDeliveryDetails", event.target.value)} className={`${inputClass} resize-none`} placeholder="Explain meetings, communication, and delivery of completed work." /></label>}

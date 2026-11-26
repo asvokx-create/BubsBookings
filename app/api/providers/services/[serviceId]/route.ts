@@ -9,6 +9,7 @@ import { enforceRateLimit } from "@/lib/request-security";
 import { runAutomatedProviderVerification } from "@/lib/provider-verification";
 import { isServiceDeliveryType, type ServiceDeliveryType } from "@/lib/service-delivery";
 import { isRecurrenceOption, type RecurrenceOption } from "@/lib/service-commerce";
+import { resolveHourlyListingEstimate, type HourlyListingEstimate } from "@/lib/hourly-listing-estimate";
 import { isHourlyBillingIncrement, isPricingType, validateListingHourlyPricing, type PricingType } from "@/lib/service-pricing";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
 
@@ -36,6 +37,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ser
     duration_minutes: number;
     pricing_type: PricingType;
     hourly_rate_cents: number | null;
+    estimated_min_minutes: number | null;
+    estimated_max_minutes: number | null;
     minimum_duration_minutes: number | null;
     maximum_duration_minutes: number | null;
     billing_increment_minutes: number | null;
@@ -56,6 +59,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ser
     `SELECT s.id::text, s.business_name, s.slug, s.title, s.category, s.delivery_type, s.remote_delivery_details, s.description,
             s.price_cents, s.duration_minutes, s.pricing_type, s.hourly_rate_cents, s.minimum_duration_minutes,
             s.maximum_duration_minutes, s.billing_increment_minutes, s.default_duration_minutes,
+            s.estimated_min_minutes, s.estimated_max_minutes,
             COALESCE(s.city, p.city) AS city, COALESCE(s.state, p.state) AS state,
             s.booking_questions, p.plan, s.service_kind, s.preparation_notes, s.recurrence_options,
             (SELECT jsonb_agg(jsonb_build_object('id', package.id::text, 'name', package.name, 'description', package.description, 'price', package.price_cents::numeric/100, 'durationMinutes', package.duration_minutes, 'deliveryDays', package.delivery_days, 'revisionCount', package.revision_count, 'features', package.features) ORDER BY package.sort_order) FROM service_packages package WHERE package.service_id=s.id AND package.is_active=true) AS packages,
@@ -87,6 +91,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ ser
     durationMinutes: service.duration_minutes,
     pricingType: service.pricing_type,
     hourlyRate: service.hourly_rate_cents === null ? null : service.hourly_rate_cents / 100,
+    estimatedMinMinutes: service.estimated_min_minutes,
+    estimatedMaxMinutes: service.estimated_max_minutes,
     minimumDurationMinutes: service.minimum_duration_minutes,
     maximumDurationMinutes: service.maximum_duration_minutes,
     billingIncrementMinutes: service.billing_increment_minutes,
@@ -144,6 +150,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ se
 
   const packagesValid = packages.length <= 3 && packages.every((item) => item.name && item.name.length <= 60 && item.description.length <= 500 && Number.isSafeInteger(item.priceCents) && item.priceCents >= 50 && Number.isInteger(item.durationMinutes) && item.durationMinutes > 0 && (item.deliveryDays === null || Number.isInteger(item.deliveryDays) && item.deliveryDays >= 0 && item.deliveryDays <= 365) && (item.revisionCount === null || Number.isInteger(item.revisionCount) && item.revisionCount >= 0 && item.revisionCount <= 100));
   const addOnsValid = addOns.length <= 10 && addOns.every((item) => item.name && item.name.length <= 80 && item.description.length <= 500 && Number.isSafeInteger(item.priceCents) && item.priceCents >= 0 && Number.isInteger(item.additionalMinutes) && item.additionalMinutes >= 0 && item.additionalMinutes <= 43200 && Number.isInteger(item.maxQuantity) && item.maxQuantity >= 1 && item.maxQuantity <= 20);
+  let estimate: HourlyListingEstimate | undefined;
+  try { estimate = resolveHourlyListingEstimate(body, pricingType === "HOURLY"); }
+  catch (cause) { return NextResponse.json({ error: cause instanceof Error ? cause.message : "Invalid estimate." }, { status: 400 }); }
   let hourlyValid = pricingType !== "HOURLY";
   if (pricingType === "HOURLY" && isHourlyBillingIncrement(billingIncrementMinutes)) {
     try {
@@ -219,12 +228,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ se
            latitude = CASE WHEN $4='REMOTE' THEN latitude ELSE $13 END, longitude = CASE WHEN $4='REMOTE' THEN longitude ELSE $14 END,
            service_kind=$16, preparation_notes=$17, recurrence_options=$18::text[],
            pricing_type=$19, hourly_rate_cents=$20, minimum_duration_minutes=$21,
-           maximum_duration_minutes=$22, billing_increment_minutes=$23, default_duration_minutes=$24
+           maximum_duration_minutes=$22, billing_increment_minutes=$23, default_duration_minutes=$24,
+           estimated_min_minutes=CASE WHEN $25::boolean THEN $26::integer ELSE estimated_min_minutes END,
+           estimated_max_minutes=CASE WHEN $25::boolean THEN $27::integer ELSE estimated_max_minutes END
        WHERE id::text = $15`,
       [businessName, title, category, deliveryType, remoteDeliveryDetails, description, effectivePriceCents, effectiveDurationMinutes, JSON.stringify(bookingQuestions), locationId || null, selected?.city ?? null, selected?.state ?? null, selected?.latitude ?? null, selected?.longitude ?? null, serviceId, serviceKind, preparationNotes, recurrenceOptions, pricingType,
         pricingType === "HOURLY" ? hourlyRateCents : null, pricingType === "HOURLY" ? minimumDurationMinutes : null,
         pricingType === "HOURLY" ? maximumDurationMinutes : null, pricingType === "HOURLY" ? billingIncrementMinutes : null,
-        pricingType === "HOURLY" ? defaultDurationMinutes : null],
+        pricingType === "HOURLY" ? defaultDurationMinutes : null, estimate !== undefined, estimate?.estimatedMinMinutes ?? null, estimate?.estimatedMaxMinutes ?? null],
     );
     await client.query("DELETE FROM service_packages WHERE service_id::text=$1", [serviceId]);
     for (const [index, item] of packages.entries()) await client.query(`INSERT INTO service_packages
