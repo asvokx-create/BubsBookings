@@ -17,6 +17,7 @@ import { recordAnalytics } from "@/lib/analytics";
 import { AFFILIATE_COOKIE, lockAffiliateAttribution, normalizeAffiliateCode } from "@/lib/affiliates";
 import { slugifyProviderName } from "@/lib/provider-profile-options";
 import { isServiceDeliveryType } from "@/lib/service-delivery";
+import { resolveHourlyListingEstimate, type HourlyListingEstimate } from "@/lib/hourly-listing-estimate";
 import { isHourlyBillingIncrement, isPricingType, validateListingHourlyPricing } from "@/lib/service-pricing";
 import { deliverProviderWelcomeEmail, enqueueProviderWelcomeEmail } from "@/lib/provider-welcome-email";
 import { reconcileExpiredComplimentaryProGrants } from "@/lib/complimentary-pro";
@@ -87,6 +88,9 @@ export async function POST(request: Request) {
   }) : [];
   const validTime = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+  let estimate: HourlyListingEstimate | undefined;
+  try { estimate = resolveHourlyListingEstimate(body, pricingType === "HOURLY"); }
+  catch (cause) { return NextResponse.json({ error: cause instanceof Error ? cause.message : "Invalid estimate." }, { status: 400 }); }
   let hourlyValid = pricingType !== "HOURLY";
   if (pricingType === "HOURLY" && isHourlyBillingIncrement(billingIncrementMinutes)) {
     try { validateListingHourlyPricing({ pricingType, hourlyRateCents, minimumDurationMinutes, maximumDurationMinutes, billingIncrementMinutes, defaultDurationMinutes }); hourlyValid = true; } catch { hourlyValid = false; }
@@ -234,15 +238,15 @@ export async function POST(request: Request) {
 
     const serviceResult = await client.query<{ id: string }>(
       `INSERT INTO services (provider_id, company_id, location_id, business_name, slug, category, delivery_type, remote_delivery_details, title, description, price_cents, duration_minutes, city, state, latitude, longitude,
-          pricing_type,hourly_rate_cents,minimum_duration_minutes,maximum_duration_minutes,billing_increment_minutes,default_duration_minutes,is_active,age_verification_blocked)
-       VALUES ($1, $2, CASE WHEN $7='REMOTE' THEN NULL ELSE $3::uuid END, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,$17,$18,$19,$20,$21,$22,$23,$24)
+          pricing_type,hourly_rate_cents,minimum_duration_minutes,maximum_duration_minutes,billing_increment_minutes,default_duration_minutes,is_active,age_verification_blocked,estimated_min_minutes,estimated_max_minutes)
+       VALUES ($1, $2, CASE WHEN $7='REMOTE' THEN NULL ELSE $3::uuid END, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
        RETURNING id::text`,
       [providerId, companyId, serviceLocation.id, business, slugify(service), category, deliveryType, remoteDeliveryDetails, service, description,
         pricingType === "HOURLY" ? hourlyRateCents : pricingType === "QUOTE_ONLY" ? 0 : Math.round(price * 100), pricingType === "HOURLY" ? defaultDurationMinutes : durationMinutes,
         serviceLocation.city, serviceLocation.state, serviceLocation.latitude, serviceLocation.longitude, pricingType,
         pricingType === "HOURLY" ? hourlyRateCents : null, pricingType === "HOURLY" ? minimumDurationMinutes : null,
         pricingType === "HOURLY" ? maximumDurationMinutes : null, pricingType === "HOURLY" ? billingIncrementMinutes : null,
-        pricingType === "HOURLY" ? defaultDurationMinutes : null, listingAgeVerified, !listingAgeVerified],
+        pricingType === "HOURLY" ? defaultDurationMinutes : null, listingAgeVerified, !listingAgeVerified, estimate?.estimatedMinMinutes ?? null, estimate?.estimatedMaxMinutes ?? null],
     );
 
     if (!existing) {

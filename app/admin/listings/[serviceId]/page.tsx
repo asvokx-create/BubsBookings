@@ -6,7 +6,7 @@ import { database } from "@/lib/database";
 import { formatDuration, getServiceVisual } from "@/lib/marketplace";
 import ServiceCategoryIcon from "@/components/service-category-icon";
 import { getAdminSession } from "@/lib/admin";
-import { formatDurationMinutes, formatHourlyRate } from "@/lib/service-pricing";
+import { formatHourlyRate } from "@/lib/service-pricing";
 import { listingInactiveReasons, type ProviderAgeVerificationStatus } from "@/lib/provider-activation";
 
 export const dynamic = "force-dynamic";
@@ -96,7 +96,7 @@ export default async function AdminListingPreviewPage({ params }: PageProps<"/ad
           <p className="text-xs font-bold uppercase tracking-wider text-[#718078]">{quoteOnly ? "Pricing" : hourly ? "Hourly rate" : "Starting price"}</p>
           <p className="mt-2 text-4xl font-bold">{quoteOnly ? "Custom Quote" : hourly ? formatHourlyRate(listing.hourly_rate_cents!) : `$${(listing.price_cents / 100).toFixed(2)}`}</p>
           <div className="mt-6 space-y-3 text-sm">
-            <p className="rounded-2xl bg-[#f5f5ef] p-4"><strong>{hourly ? "Booking duration" : "Typical duration"}</strong><span className="mt-1 block text-[#687970]">{hourly ? `${formatDurationMinutes(listing.default_duration_minutes ?? listing.duration_minutes)} default` : formatDuration(listing.duration_minutes)}</span>{hourly && <span className="mt-1 block text-xs text-[#718078]">Minimum {formatDurationMinutes(listing.minimum_duration_minutes ?? listing.duration_minutes)} · {listing.billing_increment_minutes ?? 30}-minute increments{listing.maximum_duration_minutes ? ` · Maximum ${formatDurationMinutes(listing.maximum_duration_minutes)}` : ""}</span>}</p>
+            <p className="rounded-2xl bg-[#f5f5ef] p-4"><strong>{hourly ? "Project billing" : "Typical duration"}</strong><span className="mt-1 block text-[#687970]">{hourly ? "Tracked hourly project, no minimum duration" : formatDuration(listing.duration_minutes)}</span></p>
             <p className="rounded-2xl bg-[#f5f5ef] p-4"><strong>Service availability</strong><span className="mt-1 block text-[#687970]">{serviceAreaLabel}</span></p>
             {listing.remote_delivery_details && <p className="rounded-2xl bg-[#f5f5ef] p-4"><strong>Remote delivery details</strong><span className="mt-1 block text-[#687970]">{listing.remote_delivery_details}</span></p>}
           </div>

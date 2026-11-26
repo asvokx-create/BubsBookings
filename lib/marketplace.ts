@@ -58,6 +58,8 @@ export type ServiceListing = {
 };
 
 export type ServiceDetails = ServiceListing & {
+  estimatedMinMinutes: number | null;
+  estimatedMaxMinutes: number | null;
   completedJobCount: number;
   reviewCount: number;
   averageRating: number | null;
@@ -196,7 +198,7 @@ export async function getServices(options: { query?: string; category?: string; 
   }
   if (options.maxDuration && Number.isFinite(options.maxDuration)) {
     values.push(options.maxDuration);
-    conditions.push(`CASE WHEN s.pricing_type='HOURLY' THEN s.default_duration_minutes ELSE s.duration_minutes END <= $${values.length}`);
+    conditions.push(`CASE WHEN s.pricing_type='HOURLY' THEN s.estimated_max_minutes ELSE s.duration_minutes END <= $${values.length}`);
   }
   // Distance and explicit service-area matching happen after the database query.
   // A database limit here would discard eligible nearby listings whenever they
@@ -261,9 +263,9 @@ export async function getServices(options: { query?: string; category?: string; 
 export async function getServiceBySlug(slug: string): Promise<ServiceDetails | null> {
   if (!isDatabaseConfigured()) return null;
   await reconcileExpiredComplimentaryProGrants();
-  const result = await database.query<ServiceRow>(
+  const result = await database.query<ServiceRow & { estimated_min_minutes: number | null; estimated_max_minutes: number | null }>(
     `SELECT s.id::text, s.slug, s.title, s.category, s.delivery_type, s.remote_delivery_details, s.description, s.price_cents,
-            s.duration_minutes, s.pricing_type, s.hourly_rate_cents, s.minimum_duration_minutes, s.maximum_duration_minutes, s.billing_increment_minutes, s.default_duration_minutes,
+            s.duration_minutes, s.pricing_type, s.hourly_rate_cents, s.minimum_duration_minutes, s.maximum_duration_minutes, s.billing_increment_minutes, s.default_duration_minutes, s.estimated_min_minutes, s.estimated_max_minutes,
             p.id::text AS provider_id, p.public_profile_slug AS provider_slug, p.public_profile_visible AS provider_profile_visible,
             s.business_name, owner.image AS provider_profile_image_url, company.slug AS company_slug,
             (SELECT round(avg(review.rating)::numeric, 1)::float FROM reviews review WHERE review.provider_id = p.id AND review.is_hidden = false) AS provider_average_rating,
@@ -324,6 +326,8 @@ export async function getServiceBySlug(slug: string): Promise<ServiceDetails | n
   const commerce = commerceResult.rows[0];
   return {
     ...service,
+    estimatedMinMinutes: result.rows[0].estimated_min_minutes ?? null,
+    estimatedMaxMinutes: result.rows[0].estimated_max_minutes ?? null,
     completedJobCount: Number(details?.completed_job_count ?? 0),
     reviewCount: Number(details?.review_count ?? 0),
     averageRating: details?.average_rating ? Number(details.average_rating) : null,
